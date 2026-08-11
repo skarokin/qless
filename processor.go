@@ -130,6 +130,12 @@ func (p *Processor) HTTPHandler() http.Handler {
 	return http.HandlerFunc(p.serveHTTP)
 }
 
+// QueueDepth returns a point-in-time count of jobs waiting for a worker, excluding jobs currently executing.
+// It is safe to call from any goroutine; typical uses are health endpoints, keep-alive pingers, and readiness checks.
+func (p *Processor) QueueDepth() int {
+	return len(p.queue)
+}
+
 // Shutdown stops accepting new work and waits for accepted work to finish. If ctx expires first, queued jobs
 // are abandoned, active attempts are cancelled, and a *ShutdownError describing the lost work is returned.
 // Subsequent calls wait for the first shutdown and return its result.

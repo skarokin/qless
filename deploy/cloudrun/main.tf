@@ -4,9 +4,11 @@
 # on Cloud Run that mean sinstance-based billing (cpu_idle = false).
 #
 # Other qless-relevant choices, called out inline below:
-#   - min_instance_count = 1: scale-to-zero would discard the in-memory queue. Scale-to-zero is okay if
-#     jobs are short and queue is small, since Cloud Run's autoscaler makes decisions from in-flight requests,
-#     meaning qless' instant-202 from Cloud Run's perspective is an idle instance while jobs are being processed.
+#   - min_instance_count = 0: scale to zero and pay only while instances are alive. This works because
+#     jobs are expected to be short: idle instances linger before Cloud Run reaps them, and the ~10s
+#     SIGTERM grace lets qless drain stragglers. The blind spot is that the autoscaler decides from
+#     in-flight requests and cannot see the queue (qless returns 202 instantly), so long jobs or deep
+#     queues can be cut off mid-drain; set min_instance_count = 1 for those workloads.
 #   - Multiple instances each run an independent queue; the load balancer spreads jobs across them.
 #     qless makes no cross-replica guarantees.
 #   - Cloud Run allows ~10s between SIGTERM and SIGKILL. The example server budgets 3s HTTP drain + 6s queue drain, which fits.
@@ -60,10 +62,15 @@ resource "google_cloud_run_v2_service" "qless" {
   ingress  = "INGRESS_TRAFFIC_ALL"
   
   template {
-    # Keep at least one instance warm: scaling to zero stops the container and discards any queued jobs
-    # (an accepted qless risk, but min 1 makes it rare enough to not care about).
+    # Scale to zero: you pay only while instances are alive. The caveat is that
+    # the autoscaler decides scale-down from in-flight requests and cannot see
+    # the qless queue, which drains AFTER responses are sent. In practice idle
+    # instances linger for minutes before being reaped and the ~10s SIGTERM
+    # grace covers stragglers via graceful drain, so short jobs almost always
+    # finish. If your jobs are long or your queues run deep, set
+    # min_instance_count = 1 to make instance stops rare instead of routine.
     scaling {
-      min_instance_count = 1
+      min_instance_count = 0
       max_instance_count = 3
     }
 

@@ -371,6 +371,37 @@ func TestShutdownWithoutStart(t *testing.T) {
 	}
 }
 
+func TestQueueDepth(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 8)
+	p := startProcessor(t, Config{Workers: 1, QueueSize: 8}, func(context.Context, []byte) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	})
+
+	if d := p.QueueDepth(); d != 0 {
+		t.Fatalf("initial depth = %d, want 0", d)
+	}
+
+	// First job occupies the only worker; the next three wait in the queue.
+	fillProcessor(t, p, 1)
+	<-started
+	fillProcessor(t, p, 3)
+	if d := p.QueueDepth(); d != 3 {
+		t.Fatalf("depth = %d, want 3 (executing job must not count)", d)
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for p.QueueDepth() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if d := p.QueueDepth(); d != 0 {
+		t.Fatalf("depth after drain = %d, want 0", d)
+	}
+}
+
 func TestNewNilHandler(t *testing.T) {
 	if _, err := New(Config{}, nil); err == nil {
 		t.Fatal("New with nil handler should error")

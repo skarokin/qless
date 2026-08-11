@@ -10,7 +10,7 @@ Zero-infrastructure, config-driven HTTP async processing for Go — built for se
 
 **Do NOT use qless when:** you need durability, exactly-once processing, or audit guarantees — payments, orders, etc.
 
-`qless` provides out-of-the-box observability, retries, worker pool configuration, and queueing for you.
+`qless` provides out-of-the-box observability, retries, worker pool configuration, and job queueing for you.
 
 ## Install
 

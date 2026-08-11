@@ -99,9 +99,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /enqueue", apiKeyMiddleware(apiKey, processor.HTTPHandler()))
 
-	// Example health endpoint - not required for qless to function
+	// Example health endpoint - not required for qless to function.
+	// Exposing the queue depth lets external tooling see work the platform's
+	// autoscaler can't (e.g. a keep-alive pinger on scale-to-zero platforms
+	// that keeps requesting the service URL while depth > 0).
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"ok","queue_depth":%d}`, processor.QueueDepth())
 	})
 	// Example root endpoint - not required for qless to function
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
