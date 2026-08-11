@@ -36,17 +36,18 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.obs.received.Add(ctx, 1)
 
-	// Register the enqueue under the read lock so Shutdown either sees it via enqueueWG or this request observes the state change and is rejected.
-	// This happens before reading the body so pending request payloads cannot bypass the processor's configured memory bound.
 	p.mu.RLock()
 	if p.state != stateRunning {
 		p.mu.RUnlock()
 		http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
 		return
 	}
+
+	// Processor is running at this point, we can attempt to enqueue the job
 	p.enqueueWG.Add(1)
 	p.pendingEnqueues.Add(1)
 	p.mu.RUnlock()
+
 	defer func() {
 		p.pendingEnqueues.Add(-1)
 		p.enqueueWG.Done()
@@ -55,9 +56,12 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if !p.acquireSlot(ctx, w) {
 		return
 	}
-	slotOwned := true
+
+	slotOwnedByHTTPHandler := true
 	defer func() {
-		if slotOwned {
+		// defer freeing up the slot if it was acquired by the HTTP handler but never passed down to the worker
+		// this cleans up in any failure paths before the worker is able to start executing the job
+		if slotOwnedByHTTPHandler {
 			<-p.slots
 		}
 	}()
@@ -85,9 +89,9 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	p.obs.payloadSize.Record(ctx, int64(len(payload)))
 
 	j := p.newJob(payload, span.SpanContext(), baggage.FromContext(ctx))
-	// Queue capacity equals slot capacity, so this send cannot block.
 	p.queue <- j
-	slotOwned = false
+	// it is now the responsibility of the worker to release the slot when job is finished
+	slotOwnedByHTTPHandler = false
 
 	p.obs.enqueued.Add(ctx, 1)
 	span.SetAttributes(attribute.String("qless.job.id", j.id))
