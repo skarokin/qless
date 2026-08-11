@@ -49,6 +49,32 @@ type Stats struct {
 	Workers int `json:"workers"`
 	// Accepting reports whether the processor currently accepts new jobs.
 	Accepting bool `json:"accepting"`
+	// Totals are cumulative counts since the processor was created.
+	Totals Totals `json:"totals"`
+}
+
+// Totals is the cumulative-counter portion of Stats. Every field is monotonically increasing and mirrors
+// an OpenTelemetry counter, so surfaces that cannot read back OTel instruments (such as the debug dashboard) can
+// still display them. Received = Enqueued + Rejected + Backpressure.
+type Totals struct {
+	// Received counts jobs received by the HTTP handler (qless.jobs.received).
+	Received int64 `json:"received"`
+	// Enqueued counts jobs accepted into the queue (qless.jobs.enqueued).
+	Enqueued int64 `json:"enqueued"`
+	// Rejected counts jobs turned away before enqueue for non-backpressure
+	// reasons (qless.jobs.rejected).
+	Rejected int64 `json:"rejected"`
+	// Backpressure counts enqueues that failed because the processor was full:
+	// immediate rejections, wait timeouts, client cancellations, and shutdowns
+	// while waiting (the failed outcomes of qless.backpressure.events).
+	Backpressure int64 `json:"backpressure"`
+	// Succeeded counts jobs whose handler returned nil
+	// (qless.jobs.executions with outcome="success").
+	Succeeded int64 `json:"succeeded"`
+	// Retries counts retry attempts scheduled after failed attempts (qless.jobs.retries).
+	Retries int64 `json:"retries"`
+	// FinalFailures counts jobs that ended without succeeding (qless.jobs.final_failures).
+	FinalFailures int64 `json:"final_failures"`
 }
 
 // Processor accepts jobs over HTTP and executes them on a bounded in-memory worker pool.
@@ -80,6 +106,18 @@ type Processor struct {
 	pendingEnqueues atomic.Int64
 	workersWG       sync.WaitGroup
 	activeJobs      atomic.Int64
+
+	// totals mirror the OTel counters; kept as atomics because the OTel API
+	// offers no way to read an instrument's value back.
+	totals struct {
+		received      atomic.Int64
+		enqueued      atomic.Int64
+		rejected      atomic.Int64
+		backpressure  atomic.Int64
+		succeeded     atomic.Int64
+		retries       atomic.Int64
+		finalFailures atomic.Int64
+	}
 
 	// baseCtx is the parent of every execution attempt; cancelled on hard shutdown.
 	baseCtx   context.Context
@@ -170,6 +208,15 @@ func (p *Processor) Stats() Stats {
 		PendingEnqueues: p.pendingEnqueues.Load(),
 		Workers:         p.cfg.Workers,
 		Accepting:       accepting,
+		Totals: Totals{
+			Received:      p.totals.received.Load(),
+			Enqueued:      p.totals.enqueued.Load(),
+			Rejected:      p.totals.rejected.Load(),
+			Backpressure:  p.totals.backpressure.Load(),
+			Succeeded:     p.totals.succeeded.Load(),
+			Retries:       p.totals.retries.Load(),
+			FinalFailures: p.totals.finalFailures.Load(),
+		},
 	}
 }
 
@@ -301,6 +348,7 @@ func (p *Processor) worker() {
 func (p *Processor) abandon(j *job) {
 	ctx := context.Background()
 	p.obs.finalFailures.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", "abandoned")))
+	p.totals.finalFailures.Add(1)
 	p.obs.logger.Warn("job abandoned during shutdown", "job_id", j.id, "error", errAbandoned)
 }
 
@@ -338,6 +386,7 @@ func (p *Processor) execute(j *job) {
 		var attemptDuration time.Duration
 		attemptDuration, err = p.attempt(ctx, j, attempt)
 		if err == nil {
+			p.totals.succeeded.Add(1)
 			span.SetAttributes(attribute.Int("qless.attempts", attempt))
 			span.SetStatus(codes.Ok, "")
 			p.obs.logger.InfoContext(ctx, "job succeeded",
@@ -359,6 +408,7 @@ func (p *Processor) execute(j *job) {
 		}
 
 		p.obs.retries.Add(ctx, 1)
+		p.totals.retries.Add(1)
 		backoff := p.retryBackoff(attempt)
 		p.obs.logger.WarnContext(ctx, "job attempt failed, retrying",
 			"job_id", j.id,
@@ -439,6 +489,7 @@ func (p *Processor) safeCall(ctx context.Context, j *job, attempt int) (err erro
 
 func (p *Processor) finalFailure(ctx context.Context, span trace.Span, j *job, err error, reason string, attempt int) {
 	p.obs.finalFailures.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+	p.totals.finalFailures.Add(1)
 	span.RecordError(err)
 	span.SetAttributes(
 		attribute.Int("qless.attempts", attempt),

@@ -416,6 +416,9 @@ func TestBackpressureBlockWithTimeoutExpires(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
 		t.Fatalf("rejected after %v, expected to wait ~50ms first", elapsed)
 	}
+	if totals := p.Stats().Totals; totals.Backpressure != 1 || totals.Received != 3 || totals.Enqueued != 2 {
+		t.Fatalf("totals = %+v, want backpressure 1, received 3, enqueued 2", totals)
+	}
 }
 
 func TestStatsIncludesPendingEnqueue(t *testing.T) {
@@ -652,6 +655,11 @@ func TestStats(t *testing.T) {
 	}
 	if stats := p.Stats(); stats.QueueDepth != 0 || stats.ActiveJobs != 0 || stats.OutstandingJobs != 0 {
 		t.Fatalf("stats after drain = %+v, want no jobs", stats)
+	}
+
+	wantTotals := Totals{Received: 4, Enqueued: 4, Succeeded: 4}
+	if totals := p.Stats().Totals; totals != wantTotals {
+		t.Fatalf("totals after drain = %+v, want %+v", totals, wantTotals)
 	}
 
 	if err := p.Shutdown(context.Background()); err != nil {

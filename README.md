@@ -83,7 +83,7 @@ Applications can expose a point-in-time processor snapshot from their own health
 stats := processor.Stats()
 ```
 
-`Stats` reports queued, active, outstanding, capacity, pending-enqueue, worker, and accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
+`Stats` reports queued, active, outstanding, capacity, pending-enqueue, worker, and accepting values, plus cumulative `Totals` (received, enqueued, rejected, backpressure, succeeded, retries, final failures) that mirror the OpenTelemetry counters. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every point-in-time `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
 
 A zero-dependency HTML page that polls the same `Stats` snapshot once per second and charts the last five minutes ships with the library:
 

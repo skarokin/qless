@@ -3,105 +3,143 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>qless dashboard</title>
+<title>qless</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='38' fill='none' stroke='%23ededed' stroke-width='12'/%3E%3Cline x1='62' y1='62' x2='86' y2='86' stroke='%23ededed' stroke-width='12' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root {
-    --bg: #0b0e14;
-    --panel: #141a24;
-    --border: #232c3b;
-    --text: #dbe2ee;
-    --muted: #7d8aa0;
-    --accent: #5eb1ff;
-    --ok: #3fce8a;
-    --warn: #f0b429;
-    --bad: #f2555a;
+    --bg: #0a0a0a;
+    --card: #0a0a0a;
+    --border: #242424;
+    --text: #ededed;
+    --muted: #8f8f8f;
+    --faint: #666;
+    --accent: #52a9ff;
+    --green: #2fbf71;
+    --amber: #f5a623;
+    --red: #ee5a52;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { color-scheme: dark; }
   body {
     background: var(--bg);
     color: var(--text);
-    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-    padding: 24px;
-    max-width: 960px;
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    max-width: 880px;
     margin: 0 auto;
+    padding: 48px 24px 64px;
   }
-  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
-  header h1 { font-size: 20px; font-weight: 650; letter-spacing: .3px; }
-  header .sub { color: var(--muted); font-size: 12px; }
-  #conn {
-    margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px;
-    border: 1px solid var(--border); color: var(--muted);
+
+  header {
+    display: flex; align-items: baseline; gap: 10px;
+    padding-bottom: 20px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
   }
-  #conn.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-  #conn.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
-  .badge {
-    font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 600;
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: -.2px; }
+  header .sub { color: var(--faint); font-size: 13px; }
+  .status { margin-left: auto; display: flex; gap: 20px; }
+  .status span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.ok { background: var(--green); }
+  .dot.bad { background: var(--red); }
+
+  .panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+
+  .stats { display: grid; grid-template-columns: repeat(6, 1fr); }
+  .stat { padding: 16px 20px; border-left: 1px solid var(--border); }
+  .stat:first-child { border-left: none; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value {
+    font-size: 24px; font-weight: 600; letter-spacing: -.5px;
+    font-variant-numeric: tabular-nums; margin-top: 4px;
   }
-  .badge.accepting { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
-  .badge.stopped { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-  .grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 12px; margin-bottom: 12px;
+  .stat .value.alert { color: var(--red); }
+
+  .stats.totals { grid-template-columns: repeat(7, 1fr); }
+  .stats.totals .stat { padding: 12px 16px; }
+  .stats.totals .value { font-size: 16px; letter-spacing: -.2px; }
+
+  .meters { display: grid; grid-template-columns: 1fr 1fr; }
+  .meter { padding: 16px 20px; }
+  .meter + .meter { border-left: 1px solid var(--border); }
+  .meter .row { display: flex; justify-content: space-between; margin-bottom: 10px; }
+  .meter .row .name { color: var(--muted); font-size: 12px; }
+  .meter .row .frac { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .fill { height: 100%; width: 0%; background: var(--text); border-radius: 2px; transition: width .5s ease, background-color .3s; }
+
+  .chart-panel { padding: 16px 20px; }
+  .chart-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 14px; }
+  .chart-head .name { color: var(--muted); font-size: 12px; margin-right: auto; }
+  .key { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 12px; }
+  .key .swatch { width: 10px; height: 2px; }
+  canvas { width: 100%; height: 160px; display: block; }
+
+  footer { color: var(--faint); font-size: 12px; }
+
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(3, 1fr); }
+    .stat:nth-child(4) { border-left: none; }
+    .stat:nth-child(n+4) { border-top: 1px solid var(--border); }
+    .stats.totals { grid-template-columns: repeat(4, 1fr); }
+    .stats.totals .stat:nth-child(4) { border-left: 1px solid var(--border); }
+    .stats.totals .stat:nth-child(5) { border-left: none; }
+    .stats.totals .stat:nth-child(n+5) { border-top: 1px solid var(--border); }
+    .stats.totals .stat:nth-child(4) { border-top: none; }
   }
-  .card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px;
-  }
-  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
-  .card .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .bars { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .bar-card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .bar-card .row b { color: var(--text); font-variant-numeric: tabular-nums; }
-  .track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
-  .fill { height: 100%; width: 0%; border-radius: 999px; background: var(--accent); transition: width .4s ease, background .4s ease; }
-  .chart-card { margin-bottom: 12px; }
-  .chart-card .row { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-  .chart-card .key { display: inline-flex; align-items: center; gap: 6px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-  canvas { width: 100%; height: 140px; display: block; }
-  footer { color: var(--muted); font-size: 12px; }
-  @media (max-width: 640px) { .bars { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
   <h1>qless</h1>
-  <span class="sub">per-instance debug dashboard</span>
-  <span id="accepting" class="badge accepting">accepting</span>
-  <span id="conn">connecting&hellip;</span>
+  <span class="sub">debug</span>
+  <div class="status">
+    <span><span class="dot ok" id="accepting-dot"></span><span id="accepting-text">Accepting</span></span>
+    <span><span class="dot" id="conn-dot"></span><span id="conn-text">Connecting</span></span>
+  </div>
 </header>
 
-<div class="grid">
-  <div class="card"><div class="label">Outstanding</div><div class="value" id="outstanding_jobs">&ndash;</div></div>
-  <div class="card"><div class="label">Queue depth</div><div class="value" id="queue_depth">&ndash;</div></div>
-  <div class="card"><div class="label">Active</div><div class="value" id="active_jobs">&ndash;</div></div>
-  <div class="card"><div class="label">Pending enqueues</div><div class="value" id="pending_enqueues">&ndash;</div></div>
-  <div class="card"><div class="label">Workers</div><div class="value" id="workers">&ndash;</div></div>
-  <div class="card"><div class="label">Capacity</div><div class="value" id="capacity">&ndash;</div></div>
+<div class="panel stats">
+  <div class="stat"><div class="label">Outstanding</div><div class="value" id="outstanding_jobs">–</div></div>
+  <div class="stat"><div class="label">Queued</div><div class="value" id="queue_depth">–</div></div>
+  <div class="stat"><div class="label">Active</div><div class="value" id="active_jobs">–</div></div>
+  <div class="stat"><div class="label">Pending</div><div class="value" id="pending_enqueues">–</div></div>
+  <div class="stat"><div class="label">Workers</div><div class="value" id="workers">–</div></div>
+  <div class="stat"><div class="label">Capacity</div><div class="value" id="capacity">–</div></div>
 </div>
 
-<div class="bars">
-  <div class="card bar-card">
-    <div class="row"><span>Pool utilization (active / workers)</span><b id="util-label">&ndash;</b></div>
+<div class="panel stats totals">
+  <div class="stat"><div class="label">Received</div><div class="value" id="t-received">–</div></div>
+  <div class="stat"><div class="label">Enqueued</div><div class="value" id="t-enqueued">–</div></div>
+  <div class="stat"><div class="label">Succeeded</div><div class="value" id="t-succeeded">–</div></div>
+  <div class="stat"><div class="label">Retries</div><div class="value" id="t-retries">–</div></div>
+  <div class="stat"><div class="label">Failed</div><div class="value" id="t-final_failures">–</div></div>
+  <div class="stat"><div class="label">Rejected</div><div class="value" id="t-rejected">–</div></div>
+  <div class="stat"><div class="label">Backpressure</div><div class="value" id="t-backpressure">–</div></div>
+</div>
+
+<div class="panel meters">
+  <div class="meter">
+    <div class="row"><span class="name">Utilization</span><span class="frac" id="util-frac">–</span></div>
     <div class="track"><div class="fill" id="util-fill"></div></div>
   </div>
-  <div class="card bar-card">
-    <div class="row"><span>Saturation (outstanding / capacity)</span><b id="sat-label">&ndash;</b></div>
+  <div class="meter">
+    <div class="row"><span class="name">Saturation</span><span class="frac" id="sat-frac">–</span></div>
     <div class="track"><div class="fill" id="sat-fill"></div></div>
   </div>
 </div>
 
-<div class="card chart-card">
-  <div class="row">
-    <span class="key"><span class="dot" style="background:var(--accent)"></span>outstanding</span>
-    <span class="key"><span class="dot" style="background:var(--warn)"></span>queue depth</span>
-    <span class="key"><span class="dot" style="background:var(--ok)"></span>active</span>
-    <span style="margin-left:auto">last 5 minutes</span>
+<div class="panel chart-panel">
+  <div class="chart-head">
+    <span class="name">Last 5 minutes</span>
+    <span class="key"><span class="swatch" style="background:var(--text)"></span>outstanding</span>
+    <span class="key"><span class="swatch" style="background:var(--faint)"></span>queued</span>
+    <span class="key"><span class="swatch" style="background:var(--accent)"></span>active</span>
   </div>
   <canvas id="chart"></canvas>
 </div>
 
-<footer>Values are this instance's in-memory state only; history resets when the page reloads. The same numbers are exported as OpenTelemetry gauges.</footer>
+<footer>Per-instance, in-memory state. The same values are exported as OpenTelemetry gauges.</footer>
 
 <script>
 (() => {
@@ -109,13 +147,14 @@
   const history = { outstanding: [], queued: [], active: [] };
   const statsURL = location.pathname.replace(/\/$/, "") + "/stats";
   const el = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-  function setBar(fillID, labelID, num, den) {
-    const pct = den > 0 ? Math.min(100, (num / den) * 100) : 0;
-    const fill = el(fillID);
-    fill.style.width = pct + "%";
-    fill.style.background = pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--accent)";
-    el(labelID).textContent = num + " / " + den;
+  function setMeter(prefix, num, den) {
+    const pct = den > 0 ? Math.min(1, num / den) : 0;
+    const fill = el(prefix + "-fill");
+    fill.style.width = (pct * 100) + "%";
+    fill.style.backgroundColor = pct >= .9 ? css("--red") : pct >= .7 ? css("--amber") : css("--text");
+    el(prefix + "-frac").textContent = num + " / " + den;
   }
 
   function push(series, v) {
@@ -133,33 +172,35 @@
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
+    const pad = 3;
     const all = [...history.outstanding, ...history.queued, ...history.active];
-    const yMax = Math.max(4, ...all) * 1.15;
-    const styles = getComputedStyle(document.documentElement);
+    const yMax = Math.max(4, ...all) * 1.1;
+    const n = history.outstanding.length;
+    // Newest sample sits at the right edge; history trails left.
+    const x = (i) => w - ((n - 1 - i) / (MAX_POINTS - 1)) * w;
+    const y = (v) => h - pad - (v / yMax) * (h - pad * 2);
 
-    // horizontal gridlines
-    ctx.strokeStyle = styles.getPropertyValue("--border");
+    ctx.strokeStyle = "rgba(255,255,255,.06)";
     ctx.lineWidth = 1;
     for (let i = 1; i <= 3; i++) {
-      const y = (h / 4) * i;
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      const gy = (h / 4) * i;
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
     }
 
     const series = [
-      [history.outstanding, styles.getPropertyValue("--accent")],
-      [history.queued, styles.getPropertyValue("--warn")],
-      [history.active, styles.getPropertyValue("--ok")],
+      [history.outstanding, css("--text")],
+      [history.queued, css("--faint")],
+      [history.active, css("--accent")],
     ];
     for (const [data, color] of series) {
       if (data.length < 2) continue;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let i = 0; i < data.length; i++) {
-        const x = (i / (MAX_POINTS - 1)) * w;
-        const y = h - (data[i] / yMax) * h;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        i === 0 ? ctx.moveTo(x(i), y(data[i])) : ctx.lineTo(x(i), y(data[i]));
       }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.25;
+      ctx.lineJoin = "round";
       ctx.stroke();
     }
   }
@@ -168,12 +209,18 @@
     for (const key of ["outstanding_jobs", "queue_depth", "active_jobs", "pending_enqueues", "workers", "capacity"]) {
       el(key).textContent = s[key];
     }
-    const badge = el("accepting");
-    badge.textContent = s.accepting ? "accepting" : "not accepting";
-    badge.className = "badge " + (s.accepting ? "accepting" : "stopped");
-
-    setBar("util-fill", "util-label", s.active_jobs, s.workers);
-    setBar("sat-fill", "sat-label", s.outstanding_jobs, s.capacity);
+    for (const key of ["received", "enqueued", "succeeded", "retries", "final_failures", "rejected", "backpressure"]) {
+      const node = el("t-" + key);
+      node.textContent = s.totals[key].toLocaleString();
+      // Failure-class totals turn red once they are nonzero.
+      if (key === "final_failures" || key === "rejected" || key === "backpressure") {
+        node.className = "value" + (s.totals[key] > 0 ? " alert" : "");
+      }
+    }
+    el("accepting-dot").className = "dot " + (s.accepting ? "ok" : "bad");
+    el("accepting-text").textContent = s.accepting ? "Accepting" : "Not accepting";
+    setMeter("util", s.active_jobs, s.workers);
+    setMeter("sat", s.outstanding_jobs, s.capacity);
 
     push(history.outstanding, s.outstanding_jobs);
     push(history.queued, s.queue_depth);
@@ -183,16 +230,15 @@
 
   async function tick() {
     if (document.hidden) return;
-    const conn = el("conn");
     try {
       const res = await fetch(statsURL, { cache: "no-store" });
       if (!res.ok) throw new Error(res.status);
       render(await res.json());
-      conn.textContent = "live";
-      conn.className = "ok";
+      el("conn-dot").className = "dot ok";
+      el("conn-text").textContent = "Live";
     } catch {
-      conn.textContent = "disconnected";
-      conn.className = "bad";
+      el("conn-dot").className = "dot bad";
+      el("conn-text").textContent = "Disconnected";
     }
   }
 

@@ -45,7 +45,7 @@ func processJob(ctx context.Context, payload []byte) error {
 	slog.InfoContext(ctx, "sending email", "email", job.Email, "template", job.Template)
 	// ... do work (simulated here) ...
 	select {
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(1000 * time.Millisecond):
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
