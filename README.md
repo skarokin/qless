@@ -55,6 +55,26 @@ attempt, _ := qless.AttemptFromContext(ctx) // one-based
 
 Execution timeouts and shutdown cancellation are cooperative. Handlers should stop promptly when `ctx.Done()` is closed. `Shutdown` still returns when its own context expires if a handler ignores cancellation, but that handler goroutine can continue until the function returns or the process is killed.
 
+## Where to deploy
+
+qless does its work **after** the HTTP response is sent, so the platform must satisfy two requirements:
+
+1. **CPU stays available between requests** — the worker pool runs in the background after the 202.
+2. **SIGTERM is delivered before the instance stops** — qless drains the queue during the grace window.
+
+| Infrastructure | Fit | Notes |
+| --- | --- | --- |
+| VM / bare metal (EC2, GCE, Hetzner, homelab) | Good | Always-on, full control over shutdown. See [`deploy/vm`](deploy/vm) for a Docker Compose setup. |
+| Kubernetes | Good | Configurable `terminationGracePeriodSeconds` (default 30s). Wire `/readyz` to a readiness probe — never a liveness probe. |
+| ECS on Fargate | Good | Always-on tasks; `stopTimeout` up to 120s. No scale-to-zero, so budget for a minimal always-on task. |
+| Azure Container Apps | Good | Scales to zero **and** grace period configurable up to 600s — the friendliest scale-to-zero target. |
+| Cloud Run (instance-based billing) | Good, short jobs | Requires `cpu_idle = false`. Scale-to-zero works when jobs drain within the ~10s SIGTERM window; set `min_instance_count = 1` for long jobs or deep queues. See [`deploy/cloudrun`](deploy/cloudrun). |
+| Fly.io Machines / Knative | Good, short jobs | Scale-to-zero with configurable grace (`kill_timeout` up to 300s on Fly). Same drain-window caveat as Cloud Run. |
+| Cloud Run (request-based billing, the default) | Bad | CPU is throttled to near zero after the response; queued jobs stall mid-drain. |
+| AWS Lambda / Cloud Functions / Azure Functions | Bad | Execution freezes the moment the response returns; "after the response" does not exist. Use the platform's native async invocation instead. |
+
+Any platform that bills or throttles per-request will silently stall your queue, because from its perspective an instance holding 200 queued jobs is *idle*.
+
 ## Runtime status
 
 Applications can expose a point-in-time processor snapshot from their own health or status endpoints:
