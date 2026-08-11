@@ -136,10 +136,14 @@ func main() {
 		_ = json.NewEncoder(w).Encode(processor.Stats())
 	})
 
+	// The built-in live debug dashboard. It exposes internal state, so treat it
+	// like net/http/pprof: put it behind auth or an internal port in production.
+	mux.Handle("GET /debug/qless/", processor.DashboardHandler())
+
 	// A root endpoint that lists the available endpoints
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"service":"qless","enqueue":"POST /enqueue","health":"GET /healthz","ready":"GET /readyz","status":"GET /status"}`)
+		_, _ = fmt.Fprint(w, `{"service":"qless","enqueue":"POST /enqueue","health":"GET /healthz","ready":"GET /readyz","status":"GET /status","dashboard":"GET /debug/qless/"}`)
 	})
 
 	// Spin up the HTTP server

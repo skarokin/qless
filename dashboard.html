@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qless dashboard</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #141a24;
+    --border: #232c3b;
+    --text: #dbe2ee;
+    --muted: #7d8aa0;
+    --accent: #5eb1ff;
+    --ok: #3fce8a;
+    --warn: #f0b429;
+    --bad: #f2555a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    padding: 24px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 20px; font-weight: 650; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  #conn {
+    margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  #conn.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  #conn.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+  .badge {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 600;
+  }
+  .badge.accepting { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .badge.stopped { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 12px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
+  .card .value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .bars { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .bar-card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .bar-card .row b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  .fill { height: 100%; width: 0%; border-radius: 999px; background: var(--accent); transition: width .4s ease, background .4s ease; }
+  .chart-card { margin-bottom: 12px; }
+  .chart-card .row { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .chart-card .key { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  canvas { width: 100%; height: 140px; display: block; }
+  footer { color: var(--muted); font-size: 12px; }
+  @media (max-width: 640px) { .bars { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>qless</h1>
+  <span class="sub">per-instance debug dashboard</span>
+  <span id="accepting" class="badge accepting">accepting</span>
+  <span id="conn">connecting&hellip;</span>
+</header>
+
+<div class="grid">
+  <div class="card"><div class="label">Outstanding</div><div class="value" id="outstanding_jobs">&ndash;</div></div>
+  <div class="card"><div class="label">Queue depth</div><div class="value" id="queue_depth">&ndash;</div></div>
+  <div class="card"><div class="label">Active</div><div class="value" id="active_jobs">&ndash;</div></div>
+  <div class="card"><div class="label">Pending enqueues</div><div class="value" id="pending_enqueues">&ndash;</div></div>
+  <div class="card"><div class="label">Workers</div><div class="value" id="workers">&ndash;</div></div>
+  <div class="card"><div class="label">Capacity</div><div class="value" id="capacity">&ndash;</div></div>
+</div>
+
+<div class="bars">
+  <div class="card bar-card">
+    <div class="row"><span>Pool utilization (active / workers)</span><b id="util-label">&ndash;</b></div>
+    <div class="track"><div class="fill" id="util-fill"></div></div>
+  </div>
+  <div class="card bar-card">
+    <div class="row"><span>Saturation (outstanding / capacity)</span><b id="sat-label">&ndash;</b></div>
+    <div class="track"><div class="fill" id="sat-fill"></div></div>
+  </div>
+</div>
+
+<div class="card chart-card">
+  <div class="row">
+    <span class="key"><span class="dot" style="background:var(--accent)"></span>outstanding</span>
+    <span class="key"><span class="dot" style="background:var(--warn)"></span>queue depth</span>
+    <span class="key"><span class="dot" style="background:var(--ok)"></span>active</span>
+    <span style="margin-left:auto">last 5 minutes</span>
+  </div>
+  <canvas id="chart"></canvas>
+</div>
+
+<footer>Values are this instance's in-memory state only; history resets when the page reloads. The same numbers are exported as OpenTelemetry gauges.</footer>
+
+<script>
+(() => {
+  const MAX_POINTS = 300; // 5 minutes at 1s
+  const history = { outstanding: [], queued: [], active: [] };
+  const statsURL = location.pathname.replace(/\/$/, "") + "/stats";
+  const el = (id) => document.getElementById(id);
+
+  function setBar(fillID, labelID, num, den) {
+    const pct = den > 0 ? Math.min(100, (num / den) * 100) : 0;
+    const fill = el(fillID);
+    fill.style.width = pct + "%";
+    fill.style.background = pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--accent)";
+    el(labelID).textContent = num + " / " + den;
+  }
+
+  function push(series, v) {
+    series.push(v);
+    if (series.length > MAX_POINTS) series.shift();
+  }
+
+  function drawChart() {
+    const canvas = el("chart");
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const all = [...history.outstanding, ...history.queued, ...history.active];
+    const yMax = Math.max(4, ...all) * 1.15;
+    const styles = getComputedStyle(document.documentElement);
+
+    // horizontal gridlines
+    ctx.strokeStyle = styles.getPropertyValue("--border");
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i++) {
+      const y = (h / 4) * i;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    const series = [
+      [history.outstanding, styles.getPropertyValue("--accent")],
+      [history.queued, styles.getPropertyValue("--warn")],
+      [history.active, styles.getPropertyValue("--ok")],
+    ];
+    for (const [data, color] of series) {
+      if (data.length < 2) continue;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) {
+        const x = (i / (MAX_POINTS - 1)) * w;
+        const y = h - (data[i] / yMax) * h;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  function render(s) {
+    for (const key of ["outstanding_jobs", "queue_depth", "active_jobs", "pending_enqueues", "workers", "capacity"]) {
+      el(key).textContent = s[key];
+    }
+    const badge = el("accepting");
+    badge.textContent = s.accepting ? "accepting" : "not accepting";
+    badge.className = "badge " + (s.accepting ? "accepting" : "stopped");
+
+    setBar("util-fill", "util-label", s.active_jobs, s.workers);
+    setBar("sat-fill", "sat-label", s.outstanding_jobs, s.capacity);
+
+    push(history.outstanding, s.outstanding_jobs);
+    push(history.queued, s.queue_depth);
+    push(history.active, s.active_jobs);
+    drawChart();
+  }
+
+  async function tick() {
+    if (document.hidden) return;
+    const conn = el("conn");
+    try {
+      const res = await fetch(statsURL, { cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      render(await res.json());
+      conn.textContent = "live";
+      conn.className = "ok";
+    } catch {
+      conn.textContent = "disconnected";
+      conn.className = "bad";
+    }
+  }
+
+  tick();
+  setInterval(tick, 1000);
+  window.addEventListener("resize", drawChart);
+})();
+</script>
+</body>
+</html>

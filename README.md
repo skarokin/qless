@@ -85,6 +85,14 @@ stats := processor.Stats()
 
 `Stats` reports queued, active, outstanding, capacity, pending-enqueue, worker, and accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
 
+A zero-dependency HTML page that polls the same `Stats` snapshot once per second and charts the last five minutes ships with the library:
+
+```go
+mux.Handle("GET /debug/qless/", processor.DashboardHandler())
+```
+
+Like `net/http/pprof`, it exposes internal state: mount it behind authentication or on an internal port, never on the public internet. It shows only the current instance's in-memory state.
+
 ## Observability
 
 qless logs through `slog` and instruments through the OpenTelemetry **API** — the API is the library's only dependency, and its instruments are no-ops until the application installs the OTel SDK. Install the SDK once in `main()` (set the global providers, or pass providers via `Config`) and every metric and span below flows to your OTLP endpoint, collector, or Prometheus scrape. See [`examples/telemetry.go`](examples/telemetry.go) for a complete OTLP setup.
@@ -109,4 +117,8 @@ Gauges (mirror `Stats` exactly): `qless.queue.depth`, `qless.jobs.active`, `qles
 
 Traces: the enqueue handler continues the caller's W3C trace context, and the background execution span uses the enqueue span as its remote parent — callers that propagate `traceparent` get one distributed trace across the async boundary.
 
-See [`examples/main.go`](examples/main.go) for a complete program. The example lives in its own Go module so the OTel SDK and OTLP exporters it demonstrates never enter the library's dependency graph.
+See [`examples/main.go`](examples/main.go) for a complete program. The example lives in its own Go module so the OTel SDK and OTLP exporters it demonstrates never enter the library's dependency graph. Run it from the repo root with:
+
+```bash
+go -C examples run .
+```
