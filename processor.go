@@ -83,9 +83,10 @@ type Processor struct {
 	baseCtx   context.Context
 	cancelAll context.CancelFunc
 
-	shutdownOnce sync.Once
-	shutdownDone chan struct{}
-	shutdownErr  error
+	shutdownOnce  sync.Once
+	interruptOnce sync.Once
+	shutdownDone  chan struct{}
+	shutdownErr   error
 }
 
 // New creates a Processor from cfg and the user's handler. It validates the config and registers instruments
@@ -171,29 +172,27 @@ func (p *Processor) Stats() Stats {
 
 // Shutdown stops accepting new work and waits for accepted work to finish. If ctx expires first, queued jobs
 // are abandoned, active attempts are cancelled, and a *ShutdownError describing the lost work is returned.
-// Subsequent calls wait for the first shutdown and return its result.
+// Handler cancellation is cooperative: a handler that ignores its context may continue running after Shutdown
+// returns, but it cannot prevent the deadline from being honored. Subsequent calls wait for cleanup
+// and return the first shutdown result.
 func (p *Processor) Shutdown(ctx context.Context) error {
-	first := false
-	p.shutdownOnce.Do(func() {
-		first = true
-		p.shutdownErr = p.doShutdown(ctx)
-		close(p.shutdownDone)
-	})
+	p.shutdownOnce.Do(p.startShutdown)
 
-	if !first {
+	select {
+	case <-p.shutdownDone:
+		return p.shutdownErr
+	case <-ctx.Done():
+		// Prefer a completed graceful shutdown if completion and cancellation became ready at approximately the same time.
 		select {
 		case <-p.shutdownDone:
-		case <-ctx.Done():
-			return ctx.Err()
+			return p.shutdownErr
+		default:
 		}
+		return p.interruptShutdown(ctx.Err())
 	}
-
-	return p.shutdownErr
 }
 
-func (p *Processor) doShutdown(ctx context.Context) error {
-	defer p.obs.unregisterProcessorMetrics()
-
+func (p *Processor) startShutdown() {
 	p.mu.Lock()
 	prev := p.state
 	p.state = stateStopping
@@ -204,7 +203,9 @@ func (p *Processor) doShutdown(ctx context.Context) error {
 		p.mu.Lock()
 		p.state = stateStopped
 		p.mu.Unlock()
-		return nil
+		p.obs.unregisterProcessorMetrics()
+		close(p.shutdownDone)
+		return
 	}
 
 	p.obs.logger.Info("processor shutting down",
@@ -213,72 +214,56 @@ func (p *Processor) doShutdown(ctx context.Context) error {
 		"pending_enqueues", p.pendingEnqueues.Load(),
 	)
 
-	var cause error
+	go p.finishShutdown()
+}
 
-	// Phase 1: wait for in-flight HTTP enqueues. Blocked waiters observe stopCh
-	// and bail immediately, so this only covers handlers finishing their sends.
-	enqueuesDone := make(chan struct{})
-	go func() {
-		p.enqueueWG.Wait()
-		close(enqueuesDone)
-	}()
-	var pending int64
-	select {
-	case <-enqueuesDone:
-	case <-ctx.Done():
-		cause = ctx.Err()
-		pending = p.pendingEnqueues.Load()
-		p.beginAbandon()
-		// Remaining enqueues complete quickly: slot sends are non-blocking
-		// and waiters have already been released via stopCh.
-		<-enqueuesDone
-	}
-
-	// close the queue channel - any currently active workers will finish and any new sends will panic.
+func (p *Processor) finishShutdown() {
+	// Blocked capacity waiters observe stopCh immediately, and readPayload closes request bodies that were already
+	// being read. The queue is closed only after every possible sender has returned.
+	p.enqueueWG.Wait()
 	close(p.queue)
-
-	workersDone := make(chan struct{})
-	go func() {
-		p.workersWG.Wait()
-		close(workersDone)
-	}()
-
-	var queued int
-	var active int64
-	if cause == nil {
-		select {
-		case <-workersDone:
-		case <-ctx.Done():
-			cause = ctx.Err()
-			queued = len(p.queue)
-			active = p.activeJobs.Load()
-			p.beginAbandon()
-			<-workersDone
-		}
-	} else {
-		queued = len(p.queue)
-		active = p.activeJobs.Load()
-		<-workersDone
-	}
+	p.workersWG.Wait()
 
 	p.cancelAll()
 	p.mu.Lock()
 	p.state = stateStopped
+	interrupted := p.shutdownErr != nil
 	p.mu.Unlock()
+	p.obs.unregisterProcessorMetrics()
 
-	if cause != nil {
+	if interrupted {
+		p.obs.logger.Info("processor shutdown cleanup complete")
+	} else {
+		p.obs.logger.Info("processor shutdown complete")
+	}
+	close(p.shutdownDone)
+}
+
+func (p *Processor) interruptShutdown(cause error) error {
+	p.interruptOnce.Do(func() {
+		p.mu.Lock()
+		if p.state == stateStopped {
+			p.mu.Unlock()
+			return
+		}
 		err := &ShutdownError{
-			Queued:          queued,
-			Active:          active,
-			PendingEnqueues: pending,
+			Queued:          len(p.queue),
+			Active:          p.activeJobs.Load(),
+			PendingEnqueues: p.pendingEnqueues.Load(),
 			Cause:           cause,
 		}
-		p.obs.logger.Warn("processor shutdown interrupted", "error", err)
-		return err
-	}
+		p.shutdownErr = err
+		p.mu.Unlock()
 
-	p.obs.logger.Info("processor shutdown complete")
-	return nil
+		p.beginAbandon()
+		p.obs.logger.Warn("processor shutdown interrupted", "error", err)
+	})
+
+	if p.shutdownErr == nil {
+		// finishShutdown won the race and marked the processor stopped.
+		<-p.shutdownDone
+	}
+	return p.shutdownErr
 }
 
 // beginAbandon flips workers into abandon mode and cancels active attempts.
@@ -321,7 +306,8 @@ func (p *Processor) execute(j *job) {
 	p.activeJobs.Add(1)
 	defer p.activeJobs.Add(-1)
 
-	ctx := p.baseCtx
+	queueDuration := time.Since(j.enqueuedAt)
+	ctx := context.WithValue(p.baseCtx, jobIDContextKey, j.id)
 	if j.baggage.Len() > 0 {
 		ctx = baggage.ContextWithBaggage(ctx, j.baggage)
 	}
@@ -333,17 +319,30 @@ func (p *Processor) execute(j *job) {
 		trace.WithAttributes(
 			attribute.String("qless.job.id", j.id),
 			attribute.Int("qless.payload.bytes", len(j.payload)),
+			attribute.Float64("qless.queue.duration_seconds", queueDuration.Seconds()),
 		),
 	)
 	defer span.End()
+	p.obs.queueDuration.Record(ctx, queueDuration.Seconds())
+	p.obs.logger.DebugContext(ctx, "job execution started",
+		"job_id", j.id,
+		"queue_duration", queueDuration,
+	)
 
 	maxAttempts := p.cfg.MaxRetries + 1
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err = p.attempt(ctx, j, attempt)
+		var attemptDuration time.Duration
+		attemptDuration, err = p.attempt(ctx, j, attempt)
 		if err == nil {
 			span.SetAttributes(attribute.Int("qless.attempts", attempt))
 			span.SetStatus(codes.Ok, "")
+			p.obs.logger.InfoContext(ctx, "job succeeded",
+				"job_id", j.id,
+				"attempt", attempt,
+				"attempt_duration", attemptDuration,
+				"queue_duration", queueDuration,
+			)
 			return
 		}
 
@@ -358,9 +357,16 @@ func (p *Processor) execute(j *job) {
 		}
 
 		p.obs.retries.Add(ctx, 1)
-		p.obs.logger.Warn("job attempt failed, retrying",
-			"job_id", j.id, "attempt", attempt, "max_attempts", maxAttempts, "error", err)
-		if !p.sleepBackoff(attempt) {
+		backoff := p.retryBackoff(attempt)
+		p.obs.logger.WarnContext(ctx, "job attempt failed, retrying",
+			"job_id", j.id,
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+			"attempt_duration", attemptDuration,
+			"backoff", backoff,
+			"error", err,
+		)
+		if !p.sleepBackoff(backoff) {
 			// Shutdown deadline hit mid-backoff: the retry is abandoned.
 			p.finalFailure(ctx, span, j, err, "shutdown", attempt)
 			return
@@ -368,15 +374,21 @@ func (p *Processor) execute(j *job) {
 	}
 }
 
-// sleepBackoff blocks the worker for BaseBackoff*2^(attempt-1). It returns
-// false if the processor was hard-cancelled while waiting.
-func (p *Processor) sleepBackoff(attempt int) bool {
-	shift := attempt - 1
-	if shift > 30 {
-		shift = 30
+func (p *Processor) retryBackoff(attempt int) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
+	backoff := p.cfg.BaseBackoff
+	for range attempt - 1 {
+		if backoff > maxDuration/2 {
+			return maxDuration
+		}
+		backoff *= 2
 	}
-	backoff := p.cfg.BaseBackoff << shift
+	return backoff
+}
 
+// sleepBackoff blocks the worker for backoff. It returns false if the
+// processor was hard-cancelled while waiting.
+func (p *Processor) sleepBackoff(backoff time.Duration) bool {
 	timer := time.NewTimer(backoff)
 	defer timer.Stop()
 	select {
@@ -387,12 +399,13 @@ func (p *Processor) sleepBackoff(attempt int) bool {
 	}
 }
 
-func (p *Processor) attempt(ctx context.Context, j *job, attempt int) error {
+func (p *Processor) attempt(ctx context.Context, j *job, attempt int) (time.Duration, error) {
+	ctx = context.WithValue(ctx, attemptContextKey, attempt)
 	attemptCtx, cancel := context.WithTimeout(ctx, p.cfg.ExecutionTimeout)
 	defer cancel()
 
 	start := time.Now()
-	err := p.safeCall(attemptCtx, j.payload)
+	err := p.safeCall(attemptCtx, j, attempt)
 	elapsed := time.Since(start)
 
 	outcome := "success"
@@ -403,22 +416,23 @@ func (p *Processor) attempt(ctx context.Context, j *job, attempt int) error {
 	p.obs.executions.Add(ctx, 1, attrs)
 	p.obs.taskDuration.Record(ctx, elapsed.Seconds(), attrs)
 
-	if err == nil {
-		p.obs.logger.Info("job succeeded",
-			"job_id", j.id, "attempt", attempt, "duration", elapsed)
-	}
-	return err
+	return elapsed, err
 }
 
 // safeCall invokes the user handler, converting panics into retryable errors.
-func (p *Processor) safeCall(ctx context.Context, payload []byte) (err error) {
+func (p *Processor) safeCall(ctx context.Context, j *job, attempt int) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("qless: handler panicked: %v", r)
-			p.obs.logger.Error("handler panic recovered", "panic", r, "stack", string(debug.Stack()))
+			p.obs.logger.ErrorContext(ctx, "handler panic recovered",
+				"job_id", j.id,
+				"attempt", attempt,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
 		}
 	}()
-	return p.handler(ctx, payload)
+	return p.handler(ctx, j.payload)
 }
 
 func (p *Processor) finalFailure(ctx context.Context, span trace.Span, j *job, err error, reason string, attempt int) {
@@ -429,6 +443,6 @@ func (p *Processor) finalFailure(ctx context.Context, span trace.Span, j *job, e
 		attribute.String("qless.failure.reason", reason),
 	)
 	span.SetStatus(codes.Error, reason)
-	p.obs.logger.Error("job failed permanently",
+	p.obs.logger.ErrorContext(ctx, "job failed; no further retries",
 		"job_id", j.id, "reason", reason, "attempts", attempt, "error", err)
 }

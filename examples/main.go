@@ -99,24 +99,38 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /enqueue", apiKeyMiddleware(apiKey, processor.HTTPHandler()))
 
-	// Example health endpoint - not required for qless to function.
-	// Exposing processor stats lets external tooling see work the platform's
-	// autoscaler can't (e.g. a keep-alive pinger on scale-to-zero platforms
-	// that keeps requesting the service URL while outstanding_jobs > 0).
+	// ------------------------------------------------------------------------------------------------
+	// The below are optional endpoints that are not strictly required for qlesss to function
+	// ------------------------------------------------------------------------------------------------
+
+	// A simple health endpoint
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(struct {
-			Status    string      `json:"status"`
-			Processor qless.Stats `json:"processor"`
-		}{
-			Status:    "ok",
-			Processor: processor.Stats(),
-		})
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
-	// Example root endpoint - not required for qless to function
+
+	// A readiness endpoint that reports whether this processor accepts new jobs using processor.Stats().Accepting
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !processor.Stats().Accepting {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, `{"status":"not_ready"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"status":"ready"}`)
+	})
+
+	// A status endpoint that exposes the same point-in-time values as qless's observable gauges.
+	// A keep-alive should use outstanding_jobs > 0 (not queue_depth > 0, because a final job can be active after leaving the queue).
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(processor.Stats())
+	})
+
+	// A root endpoint that lists the available endpoints
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"service":"qless","enqueue":"POST /enqueue","health":"GET /healthz"}`)
+		_, _ = fmt.Fprint(w, `{"service":"qless","enqueue":"POST /enqueue","health":"GET /healthz","ready":"GET /readyz","status":"GET /status"}`)
 	})
 
 	// Spin up the HTTP server

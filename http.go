@@ -36,20 +36,8 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.obs.received.Add(ctx, 1)
 
-	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, p.cfg.MaxPayloadBytes))
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "qless: payload exceeds MaxPayloadBytes", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "qless: failed to read request body", http.StatusBadRequest)
-		}
-		return
-	}
-	p.obs.payloadSize.Record(ctx, int64(len(payload)))
-
-	// Register the enqueue under the read lock so Shutdown either sees it via
-	// enqueueWG or this request observes the state change and is rejected.
+	// Register the enqueue under the read lock so Shutdown either sees it via enqueueWG or this request observes the state change and is rejected.
+	// This happens before reading the body so pending request payloads cannot bypass the processor's configured memory bound.
 	p.mu.RLock()
 	if p.state != stateRunning {
 		p.mu.RUnlock()
@@ -67,10 +55,39 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if !p.acquireSlot(ctx, w) {
 		return
 	}
+	slotOwned := true
+	defer func() {
+		if slotOwned {
+			<-p.slots
+		}
+	}()
+
+	payload, err := p.readPayload(w, r)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			p.obs.logger.WarnContext(ctx, "enqueue payload rejected",
+				"reason", "payload_too_large",
+				"max_payload_bytes", p.cfg.MaxPayloadBytes,
+			)
+			http.Error(w, "qless: payload exceeds MaxPayloadBytes", http.StatusRequestEntityTooLarge)
+		} else {
+			select {
+			case <-p.stopCh:
+				http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
+			default:
+				p.obs.logger.DebugContext(ctx, "failed to read enqueue payload", "error", err)
+				http.Error(w, "qless: failed to read request body", http.StatusBadRequest)
+			}
+		}
+		return
+	}
+	p.obs.payloadSize.Record(ctx, int64(len(payload)))
 
 	j := p.newJob(payload, span.SpanContext(), baggage.FromContext(ctx))
 	// Queue capacity equals slot capacity, so this send cannot block.
 	p.queue <- j
+	slotOwned = false
 
 	p.obs.enqueued.Add(ctx, 1)
 	span.SetAttributes(attribute.String("qless.job.id", j.id))
@@ -79,6 +96,25 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"id":"` + j.id + `"}`))
+}
+
+// readPayload closes an in-progress request body when processor shutdown begins. This releases its payload slot
+// and prevents a slow client from indefinitely delaying the queue close.
+func (p *Processor) readPayload(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-p.stopCh:
+			_ = r.Body.Close()
+		case <-r.Context().Done():
+			_ = r.Body.Close()
+		case <-done:
+		}
+	}()
+
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, p.cfg.MaxPayloadBytes))
+	close(done)
+	return payload, err
 }
 
 // acquireSlot reserves a payload slot according to the backpressure policy.
@@ -94,6 +130,11 @@ func (p *Processor) acquireSlot(ctx context.Context, w http.ResponseWriter) bool
 
 	if p.cfg.Backpressure.mode == backpressureRejectImmediately {
 		p.obs.backpressure.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "rejected")))
+		p.obs.logger.DebugContext(ctx, "enqueue rejected by backpressure",
+			"outcome", "rejected",
+			"outstanding_jobs", len(p.slots),
+			"capacity", cap(p.slots),
+		)
 		http.Error(w, "qless: processor is full", http.StatusServiceUnavailable)
 		return false
 	}
@@ -104,18 +145,32 @@ func (p *Processor) acquireSlot(ctx context.Context, w http.ResponseWriter) bool
 
 	select {
 	case p.slots <- struct{}{}:
-		p.obs.waitDuration.Record(ctx, time.Since(start).Seconds())
+		waited := time.Since(start)
+		p.obs.waitDuration.Record(ctx, waited.Seconds())
 		p.obs.backpressure.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "waited")))
+		p.obs.logger.DebugContext(ctx, "enqueue acquired capacity after waiting", "wait_duration", waited)
 		return true
 	case <-timer.C:
 		p.obs.backpressure.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "timeout")))
+		p.obs.logger.WarnContext(ctx, "enqueue backpressure timed out",
+			"wait_duration", time.Since(start),
+			"outstanding_jobs", len(p.slots),
+			"capacity", cap(p.slots),
+		)
 		http.Error(w, "qless: processor is full", http.StatusServiceUnavailable)
 	case <-ctx.Done():
 		p.obs.backpressure.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "canceled")))
+		p.obs.logger.DebugContext(ctx, "enqueue canceled while waiting for capacity",
+			"wait_duration", time.Since(start),
+			"error", ctx.Err(),
+		)
 		// The client is gone; the response write is best-effort.
 		http.Error(w, "qless: request canceled while waiting for queue space", http.StatusServiceUnavailable)
 	case <-p.stopCh:
 		p.obs.backpressure.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "shutdown")))
+		p.obs.logger.DebugContext(ctx, "enqueue interrupted by processor shutdown",
+			"wait_duration", time.Since(start),
+		)
 		http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
 	}
 	return false

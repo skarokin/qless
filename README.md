@@ -46,22 +46,23 @@ if err := processor.Start(); err != nil {
 // ... gracefully handle shutdown by calling processor.Shutdown(ctx) ...
 ```
 
-The payload is the raw request body as `[]byte`.
+The payload is the raw request body as `[]byte`. Job metadata is available from the handler context for application log correlation:
+
+```go
+jobID, _ := qless.JobIDFromContext(ctx)
+attempt, _ := qless.AttemptFromContext(ctx) // one-based
+```
+
+Execution timeouts and shutdown cancellation are cooperative. Handlers should stop promptly when `ctx.Done()` is closed. `Shutdown` still returns when its own context expires if a handler ignores cancellation, but that handler goroutine can continue until the function returns or the process is killed.
 
 ## Runtime status
 
-Applications can expose a point-in-time processor snapshot from their own
-health or status endpoints:
+Applications can expose a point-in-time processor snapshot from their own health or status endpoints:
 
 ```go
 stats := processor.Stats()
 ```
 
-`Stats` reports queued, active, outstanding, capacity, pending-enqueue, and
-accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for
-keep-alive decisions because the final job leaves the queue while it is still
-executing. The same values are exported from the configured OpenTelemetry
-meter as observable gauges under `qless.queue.*`, `qless.jobs.*`,
-`qless.enqueues.*`, and `qless.processor.*`.
+`Stats` reports queued, active, outstanding, capacity, pending-enqueue, and accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. The same values are exported from the configured OpenTelemetry meter as observable gauges under `qless.queue.*`, `qless.jobs.*`, `qless.enqueues.*`, and `qless.processor.*`.
 
 See [`examples/main.go`](examples/main.go) for a complete program.

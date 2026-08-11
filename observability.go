@@ -26,6 +26,7 @@ type observability struct {
 	finalFailures metric.Int64Counter
 	backpressure  metric.Int64Counter
 	taskDuration  metric.Float64Histogram
+	queueDuration metric.Float64Histogram
 	waitDuration  metric.Float64Histogram
 	payloadSize   metric.Int64Histogram
 
@@ -103,6 +104,13 @@ func newObservability(cfg normalizedConfig) (*observability, error) {
 		metric.WithUnit("s"),
 	); err != nil {
 		return nil, fmt.Errorf("qless: create task duration metric: %w", err)
+	}
+	if o.queueDuration, err = meter.Float64Histogram(
+		"qless.task.queue.duration",
+		metric.WithDescription("Time from accepting a job until a worker begins processing it"),
+		metric.WithUnit("s"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create queue duration metric: %w", err)
 	}
 	if o.waitDuration, err = meter.Float64Histogram(
 		"qless.enqueue.wait.duration",
