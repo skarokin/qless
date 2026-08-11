@@ -73,7 +73,6 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	p.queue <- j
 
 	p.obs.enqueued.Add(ctx, 1)
-	p.obs.queueDepth.Add(ctx, 1)
 	span.SetAttributes(attribute.String("qless.job.id", j.id))
 	p.obs.logger.Debug("job enqueued", "job_id", j.id, "payload_bytes", len(payload))
 

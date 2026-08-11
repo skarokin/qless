@@ -30,6 +30,25 @@ const (
 	stateStopped
 )
 
+// Stats is a point-in-time snapshot of a Processor. Its fields are also exported as
+// OpenTelemetry observable gauges from the configured MeterProvider.
+type Stats struct {
+	// QueueDepth is the number of jobs waiting for a worker. Active jobs are excluded.
+	QueueDepth int `json:"queue_depth"`
+	// ActiveJobs is the number of jobs executing or waiting to retry.
+	ActiveJobs int64 `json:"active_jobs"`
+	// OutstandingJobs is the number of accepted jobs that have not finished.
+	// It includes both queued and active jobs and is the appropriate signal for keep-alive decisions.
+	OutstandingJobs int `json:"outstanding_jobs"`
+	// Capacity is the maximum number of jobs the processor can retain.
+	Capacity int `json:"capacity"`
+	// PendingEnqueues is the number of HTTP requests currently attempting to enqueue,
+	// including requests blocked by the backpressure policy.
+	PendingEnqueues int64 `json:"pending_enqueues"`
+	// Accepting reports whether the processor currently accepts new jobs.
+	Accepting bool `json:"accepting"`
+}
+
 // Processor accepts jobs over HTTP and executes them on a bounded in-memory worker pool.
 // Create one with New, call Start, mount HTTPHandler on a POST route, and call Shutdown during application teardown.
 type Processor struct {
@@ -40,7 +59,7 @@ type Processor struct {
 	// queue holds jobs waiting for a worker. Its capacity equals the payload
 	// slot capacity (QueueSize+Workers) so a send never blocks once a slot is held.
 	queue chan *job
-	// slots bounds retained payloads: acquire by sending, release by receiving. it is a buffered channel so 
+	// slots bounds retained payloads: acquire by sending, release by receiving. it is a buffered channel so
 	// sending to a full channel will block until a slot is available and receiving from channel will free up a slot.
 	// a payload is retained from the moment the handler accepts a request body until a worker finishes executing it.
 	slots chan struct{}
@@ -85,7 +104,7 @@ func New(cfg Config, handler Handler) (*Processor, error) {
 	}
 
 	capacity := normalizedCfg.QueueSize + normalizedCfg.Workers
-	return &Processor{
+	p := &Processor{
 		cfg:          normalizedCfg,
 		handler:      handler,
 		obs:          obs,
@@ -93,7 +112,11 @@ func New(cfg Config, handler Handler) (*Processor, error) {
 		slots:        make(chan struct{}, capacity),
 		stopCh:       make(chan struct{}),
 		shutdownDone: make(chan struct{}),
-	}, nil
+	}
+	if err := obs.registerProcessorMetrics(p); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // Start starts the worker pool which will begin executing jobs as they are received.
@@ -130,10 +153,20 @@ func (p *Processor) HTTPHandler() http.Handler {
 	return http.HandlerFunc(p.serveHTTP)
 }
 
-// QueueDepth returns a point-in-time count of jobs waiting for a worker, excluding jobs currently executing.
-// It is safe to call from any goroutine; typical uses are health endpoints, keep-alive pingers, and readiness checks.
-func (p *Processor) QueueDepth() int {
-	return len(p.queue)
+// Stats returns a point-in-time snapshot of current processor activity. It is safe to call from any goroutine.
+func (p *Processor) Stats() Stats {
+	p.mu.RLock()
+	accepting := p.state == stateRunning
+	p.mu.RUnlock()
+
+	return Stats{
+		QueueDepth:      len(p.queue),
+		ActiveJobs:      p.activeJobs.Load(),
+		OutstandingJobs: len(p.slots),
+		Capacity:        cap(p.slots),
+		PendingEnqueues: p.pendingEnqueues.Load(),
+		Accepting:       accepting,
+	}
 }
 
 // Shutdown stops accepting new work and waits for accepted work to finish. If ctx expires first, queued jobs
@@ -159,6 +192,8 @@ func (p *Processor) Shutdown(ctx context.Context) error {
 }
 
 func (p *Processor) doShutdown(ctx context.Context) error {
+	defer p.obs.unregisterProcessorMetrics()
+
 	p.mu.Lock()
 	prev := p.state
 	p.state = stateStopping
@@ -265,7 +300,6 @@ func (p *Processor) newJob(payload []byte, sc trace.SpanContext, bag baggage.Bag
 func (p *Processor) worker() {
 	defer p.workersWG.Done()
 	for j := range p.queue {
-		p.obs.queueDepth.Add(context.Background(), -1)
 		if p.abandoning.Load() {
 			p.abandon(j)
 		} else {
@@ -286,8 +320,6 @@ func (p *Processor) abandon(j *job) {
 func (p *Processor) execute(j *job) {
 	p.activeJobs.Add(1)
 	defer p.activeJobs.Add(-1)
-	p.obs.activeWorkers.Add(context.Background(), 1)
-	defer p.obs.activeWorkers.Add(context.Background(), -1)
 
 	ctx := p.baseCtx
 	if j.baggage.Len() > 0 {

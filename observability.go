@@ -1,6 +1,7 @@
 package qless
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
@@ -15,6 +16,7 @@ type observability struct {
 	logger     *slog.Logger
 	tracer     trace.Tracer
 	propagator propagation.TextMapPropagator
+	meter      metric.Meter
 
 	received      metric.Int64Counter
 	enqueued      metric.Int64Counter
@@ -26,8 +28,14 @@ type observability struct {
 	taskDuration  metric.Float64Histogram
 	waitDuration  metric.Float64Histogram
 	payloadSize   metric.Int64Histogram
-	queueDepth    metric.Int64UpDownCounter
-	activeWorkers metric.Int64UpDownCounter
+
+	queueDepth      metric.Int64ObservableGauge
+	activeJobs      metric.Int64ObservableGauge
+	outstandingJobs metric.Int64ObservableGauge
+	jobCapacity     metric.Int64ObservableGauge
+	pendingEnqueues metric.Int64ObservableGauge
+	accepting       metric.Int64ObservableGauge
+	registration    metric.Registration
 }
 
 func newObservability(cfg normalizedConfig) (*observability, error) {
@@ -36,6 +44,7 @@ func newObservability(cfg normalizedConfig) (*observability, error) {
 		logger:     cfg.Logger.With("component", "qless"),
 		tracer:     cfg.TracerProvider.Tracer(instrumentationName),
 		propagator: cfg.Propagator,
+		meter:      meter,
 	}
 
 	var err error
@@ -109,20 +118,84 @@ func newObservability(cfg normalizedConfig) (*observability, error) {
 	); err != nil {
 		return nil, fmt.Errorf("qless: create payload size metric: %w", err)
 	}
-	if o.queueDepth, err = meter.Int64UpDownCounter(
+	if o.queueDepth, err = meter.Int64ObservableGauge(
 		"qless.queue.depth",
 		metric.WithDescription("Jobs currently waiting in the in-memory queue"),
 		metric.WithUnit("{job}"),
 	); err != nil {
 		return nil, fmt.Errorf("qless: create queue depth metric: %w", err)
 	}
-	if o.activeWorkers, err = meter.Int64UpDownCounter(
-		"qless.workers.active",
-		metric.WithDescription("Workers currently executing jobs"),
-		metric.WithUnit("{worker}"),
+	if o.activeJobs, err = meter.Int64ObservableGauge(
+		"qless.jobs.active",
+		metric.WithDescription("Jobs currently executing or waiting to retry"),
+		metric.WithUnit("{job}"),
 	); err != nil {
-		return nil, fmt.Errorf("qless: create active workers metric: %w", err)
+		return nil, fmt.Errorf("qless: create active jobs metric: %w", err)
+	}
+	if o.outstandingJobs, err = meter.Int64ObservableGauge(
+		"qless.jobs.outstanding",
+		metric.WithDescription("Accepted jobs that have not finished, including queued and active jobs"),
+		metric.WithUnit("{job}"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create outstanding jobs metric: %w", err)
+	}
+	if o.jobCapacity, err = meter.Int64ObservableGauge(
+		"qless.jobs.capacity",
+		metric.WithDescription("Maximum number of accepted jobs the processor can retain"),
+		metric.WithUnit("{job}"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create job capacity metric: %w", err)
+	}
+	if o.pendingEnqueues, err = meter.Int64ObservableGauge(
+		"qless.enqueues.pending",
+		metric.WithDescription("HTTP enqueue requests currently attempting to acquire payload capacity"),
+		metric.WithUnit("{request}"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create pending enqueues metric: %w", err)
+	}
+	if o.accepting, err = meter.Int64ObservableGauge(
+		"qless.processor.accepting",
+		metric.WithDescription("Whether the processor is accepting jobs (1) or not (0)"),
+		metric.WithUnit("1"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create accepting metric: %w", err)
 	}
 
 	return o, nil
+}
+
+func (o *observability) registerProcessorMetrics(p *Processor) error {
+	registration, err := o.meter.RegisterCallback(
+		func(_ context.Context, observer metric.Observer) error {
+			stats := p.Stats()
+			observer.ObserveInt64(o.queueDepth, int64(stats.QueueDepth))
+			observer.ObserveInt64(o.activeJobs, stats.ActiveJobs)
+			observer.ObserveInt64(o.outstandingJobs, int64(stats.OutstandingJobs))
+			observer.ObserveInt64(o.jobCapacity, int64(stats.Capacity))
+			observer.ObserveInt64(o.pendingEnqueues, stats.PendingEnqueues)
+			if stats.Accepting {
+				observer.ObserveInt64(o.accepting, 1)
+			} else {
+				observer.ObserveInt64(o.accepting, 0)
+			}
+			return nil
+		},
+		o.queueDepth,
+		o.activeJobs,
+		o.outstandingJobs,
+		o.jobCapacity,
+		o.pendingEnqueues,
+		o.accepting,
+	)
+	if err != nil {
+		return fmt.Errorf("qless: register processor metrics: %w", err)
+	}
+	o.registration = registration
+	return nil
+}
+
+func (o *observability) unregisterProcessorMetrics() {
+	if o.registration != nil {
+		_ = o.registration.Unregister()
+	}
 }

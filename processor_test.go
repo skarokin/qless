@@ -280,6 +280,41 @@ func TestBackpressureBlockWithTimeoutExpires(t *testing.T) {
 	}
 }
 
+func TestStatsIncludesPendingEnqueue(t *testing.T) {
+	release := make(chan struct{})
+	p := startProcessor(t, Config{
+		Workers: 1, QueueSize: 1, Backpressure: BlockWithTimeout(3 * time.Second),
+	}, func(context.Context, []byte) error {
+		<-release
+		return nil
+	})
+
+	fillProcessor(t, p, 2)
+	result := make(chan int, 1)
+	go func() {
+		result <- post(p, "waiting").Code
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for p.Stats().PendingEnqueues != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	stats := p.Stats()
+	if stats.PendingEnqueues != 1 || stats.OutstandingJobs != stats.Capacity {
+		t.Fatalf("stats while enqueue waits = %+v, want one pending and full capacity", stats)
+	}
+
+	close(release)
+	select {
+	case code := <-result:
+		if code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending enqueue never completed")
+	}
+}
+
 func TestGracefulShutdownDrainsQueue(t *testing.T) {
 	var processed atomic.Int32
 	p := startProcessor(t, Config{Workers: 2, QueueSize: 32}, func(context.Context, []byte) error {
@@ -371,7 +406,7 @@ func TestShutdownWithoutStart(t *testing.T) {
 	}
 }
 
-func TestQueueDepth(t *testing.T) {
+func TestStats(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 8)
 	p := startProcessor(t, Config{Workers: 1, QueueSize: 8}, func(context.Context, []byte) error {
@@ -380,25 +415,37 @@ func TestQueueDepth(t *testing.T) {
 		return nil
 	})
 
-	if d := p.QueueDepth(); d != 0 {
-		t.Fatalf("initial depth = %d, want 0", d)
+	initial := p.Stats()
+	if initial.QueueDepth != 0 || initial.ActiveJobs != 0 || initial.OutstandingJobs != 0 {
+		t.Fatalf("initial activity = %+v, want no jobs", initial)
+	}
+	if initial.Capacity != 9 || initial.PendingEnqueues != 0 || !initial.Accepting {
+		t.Fatalf("initial stats = %+v, want capacity 9 and accepting", initial)
 	}
 
 	// First job occupies the only worker; the next three wait in the queue.
 	fillProcessor(t, p, 1)
 	<-started
 	fillProcessor(t, p, 3)
-	if d := p.QueueDepth(); d != 3 {
-		t.Fatalf("depth = %d, want 3 (executing job must not count)", d)
+	stats := p.Stats()
+	if stats.QueueDepth != 3 || stats.ActiveJobs != 1 || stats.OutstandingJobs != 4 {
+		t.Fatalf("stats = %+v, want depth 3, active 1, outstanding 4", stats)
 	}
 
 	close(release)
 	deadline := time.Now().Add(2 * time.Second)
-	for p.QueueDepth() != 0 && time.Now().Before(deadline) {
+	for p.Stats().OutstandingJobs != 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if d := p.QueueDepth(); d != 0 {
-		t.Fatalf("depth after drain = %d, want 0", d)
+	if stats := p.Stats(); stats.QueueDepth != 0 || stats.ActiveJobs != 0 || stats.OutstandingJobs != 0 {
+		t.Fatalf("stats after drain = %+v, want no jobs", stats)
+	}
+
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if stats := p.Stats(); stats.Accepting {
+		t.Fatalf("stats after shutdown = %+v, want accepting false", stats)
 	}
 }
 

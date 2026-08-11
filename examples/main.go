@@ -74,14 +74,14 @@ func main() {
 
 	// Create a new qless processor with a given config and handler function
 	processor, err := qless.New(qless.Config{
-		QueueSize:              256,                                     // waiting jobs; retained payloads are bounded by QueueSize+Workers
-		Workers:                8,                                       // per-instance number of workers processing jobs
-		MaxRetries:             3,                                       // max number of retries for a job
-		MaxPayloadBytes:        1024 * 1024,                             // max size of a job payload
-		BaseBackoff:            100 * time.Millisecond,                  // base backoff for a job that fails
-		ExecutionTimeout:       10 * time.Second,                        // cooperative timeout for each attempt
-		Backpressure:           qless.BlockWithTimeout(3 * time.Second), // also qless.DropWith503()
-		Logger:                 logger,
+		QueueSize:        256,                                     // waiting jobs; retained payloads are bounded by QueueSize+Workers
+		Workers:          8,                                       // per-instance number of workers processing jobs
+		MaxRetries:       3,                                       // max number of retries for a job
+		MaxPayloadBytes:  1024 * 1024,                             // max size of a job payload
+		BaseBackoff:      100 * time.Millisecond,                  // base backoff for a job that fails
+		ExecutionTimeout: 10 * time.Second,                        // cooperative timeout for each attempt
+		Backpressure:     qless.BlockWithTimeout(3 * time.Second), // also qless.DropWith503()
+		Logger:           logger,
 	}, processJob)
 	if err != nil {
 		logger.Error("invalid qless config", "error", err)
@@ -100,12 +100,18 @@ func main() {
 	mux.Handle("POST /enqueue", apiKeyMiddleware(apiKey, processor.HTTPHandler()))
 
 	// Example health endpoint - not required for qless to function.
-	// Exposing the queue depth lets external tooling see work the platform's
+	// Exposing processor stats lets external tooling see work the platform's
 	// autoscaler can't (e.g. a keep-alive pinger on scale-to-zero platforms
-	// that keeps requesting the service URL while depth > 0).
+	// that keeps requesting the service URL while outstanding_jobs > 0).
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"status":"ok","queue_depth":%d}`, processor.QueueDepth())
+		_ = json.NewEncoder(w).Encode(struct {
+			Status    string      `json:"status"`
+			Processor qless.Stats `json:"processor"`
+		}{
+			Status:    "ok",
+			Processor: processor.Stats(),
+		})
 	})
 	// Example root endpoint - not required for qless to function
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {

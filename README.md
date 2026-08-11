@@ -48,4 +48,20 @@ if err := processor.Start(); err != nil {
 
 The payload is the raw request body as `[]byte`.
 
+## Runtime status
+
+Applications can expose a point-in-time processor snapshot from their own
+health or status endpoints:
+
+```go
+stats := processor.Stats()
+```
+
+`Stats` reports queued, active, outstanding, capacity, pending-enqueue, and
+accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for
+keep-alive decisions because the final job leaves the queue while it is still
+executing. The same values are exported from the configured OpenTelemetry
+meter as observable gauges under `qless.queue.*`, `qless.jobs.*`,
+`qless.enqueues.*`, and `qless.processor.*`.
+
 See [`examples/main.go`](examples/main.go) for a complete program.
