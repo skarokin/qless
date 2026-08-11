@@ -1,0 +1,55 @@
+# Example: running a qless server on a plain VM (EC2, GCE, Droplet, homelab)
+# with Docker Compose. This is the recommended setup for VMs: you get
+# restart-on-crash, log rotation, and the exact same image you would ship to
+# Cloud Run or Kubernetes.
+#
+# Usage (from this directory, on a VM with Docker installed):
+#   API_KEY=secret123 docker compose up -d --build
+#   curl -X POST localhost:8080/enqueue -H "X-API-Key: secret123" \
+#        -d '{"email":"a@b.com","template":"welcome"}'
+#   docker compose logs -f
+#   docker compose down        # SIGTERM -> graceful drain (see stop_grace_period)
+#
+# If you don't want Docker on the VM at all, the alternative is a systemd unit
+# running the static binary directly; the important parts are the same:
+# Restart=on-failure and TimeoutStopSec longer than your shutdown budget.
+
+services:
+  qless:
+    build:
+      # Build context is the repository root so the Dockerfile can copy the module.
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: qless-example
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      # Compose substitutes this from the shell or a .env file next to this
+      # file; the :? makes startup fail loudly if it was never set.
+      API_KEY: ${API_KEY:?set API_KEY in the shell or a .env file}
+    # The example server drains HTTP for up to 3s and the qless queue for up to
+    # 6s after SIGTERM. Docker's default grace period is 10s, which barely
+    # fits; 15s gives headroom so shutdown is drained, not killed.
+    stop_grace_period: 15s
+    # qless is deliberately unbounded only by what you give it: the queue and
+    # payload caps in Config bound memory, so a small hard limit here is a
+    # safe second line of defense.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # The image is distroless (no shell), so a compose healthcheck can't exec
+    # curl inside the container. Either poll GET /healthz from your monitoring,
+    # or swap the Dockerfile's final stage to alpine and uncomment:
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+    #   interval: 30s
+    #   timeout: 3s
+    #   retries: 3
