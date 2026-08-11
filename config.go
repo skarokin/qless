@@ -1,5 +1,18 @@
 package qless
 
+import (
+	"fmt"
+	"log/slog"
+	"math"
+	"runtime"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+)
+
 const (
 	defaultQueueSize        = 100
 	defaultMaxPayloadBytes  = 1 << 20
@@ -38,7 +51,6 @@ type Config struct {
 type normalizedConfig struct {
 	Config
 }
-
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	if cfg.QueueSize == 0 {
@@ -87,9 +99,9 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 		return normalizedConfig{}, fmt.Errorf("qless: BaseBackoff cannot be negative")
 	case cfg.ExecutionTimeout < 0:
 		return normalizedConfig{}, fmt.Errorf("qless: ExecutionTimeout cannot be negative")
-	case cfg.Backpressure.mode == backpressureBlock && cfg.Backpressure.timeout <= 0:
+	case cfg.Backpressure.mode == backpressureBlockWithTimeout && cfg.Backpressure.timeout <= 0:
 		return normalizedConfig{}, fmt.Errorf("qless: backpressure timeout must be positive")
-	case cfg.Backpressure.mode > backpressureBlock:
+	case cfg.Backpressure.mode > backpressureBlockWithTimeout:
 		return normalizedConfig{}, fmt.Errorf("qless: invalid backpressure policy")
 	}
 

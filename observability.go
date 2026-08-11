@@ -1,5 +1,14 @@
 package qless
 
+import (
+	"fmt"
+	"log/slog"
+
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+)
+
 const instrumentationName = "github.com/skarokin/qless"
 
 type observability struct {

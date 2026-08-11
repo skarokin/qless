@@ -1,5 +1,7 @@
 package qless
 
+import "time"
+
 type backpressureMode uint8
 
 const (
