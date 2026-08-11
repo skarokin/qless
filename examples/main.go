@@ -6,6 +6,7 @@
 // - unmarshalling the JSON payload inside your worker function
 // - starting the processor and coordinating graceful shutdown with the HTTP server
 // - exposing application-owned root and health endpoints
+// - exporting qless's metrics and traces via the OpenTelemetry SDK (see telemetry.go)
 package main
 
 import (
@@ -70,6 +71,14 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
 		logger.Warn("API_KEY is empty; POST /enqueue is unauthenticated")
+	}
+
+	// Install the OpenTelemetry SDK before creating the processor. qless records
+	// against the global providers by default; without this the instruments are no-ops.
+	shutdownTelemetry, err := setupTelemetry(context.Background(), logger)
+	if err != nil {
+		logger.Error("setup telemetry", "error", err)
+		os.Exit(1)
 	}
 
 	// Create a new qless processor with a given config and handler function
@@ -172,5 +181,12 @@ func main() {
 	defer cancelProcessorShutdown()
 	if err := processor.Shutdown(processorShutdownCtx); err != nil {
 		logger.Error("qless processor shutdown incomplete, remaining jobs abandoned", "error", err)
+	}
+
+	// Flush telemetry last so metrics and spans from the final drained jobs are exported.
+	telemetryCtx, cancelTelemetry := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelTelemetry()
+	if err := shutdownTelemetry(telemetryCtx); err != nil {
+		logger.Error("telemetry shutdown error", "error", err)
 	}
 }

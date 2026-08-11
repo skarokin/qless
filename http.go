@@ -39,6 +39,7 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.RLock()
 	if p.state != stateRunning {
 		p.mu.RUnlock()
+		p.rejectJob(ctx, "not_running")
 		http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -70,6 +71,7 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
+			p.rejectJob(ctx, "payload_too_large")
 			p.obs.logger.WarnContext(ctx, "enqueue payload rejected",
 				"reason", "payload_too_large",
 				"max_payload_bytes", p.cfg.MaxPayloadBytes,
@@ -78,8 +80,10 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			select {
 			case <-p.stopCh:
+				p.rejectJob(ctx, "shutdown")
 				http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
 			default:
+				p.rejectJob(ctx, "body_read_error")
 				p.obs.logger.DebugContext(ctx, "failed to read enqueue payload", "error", err)
 				http.Error(w, "qless: failed to read request body", http.StatusBadRequest)
 			}
@@ -100,6 +104,13 @@ func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"id":"` + j.id + `"}`))
+}
+
+// rejectJob records a job turned away before enqueue for a non-backpressure
+// reason. Backpressure outcomes are counted separately in qless.backpressure.events,
+// so qless.jobs.received = enqueued + rejected + failed backpressure outcomes.
+func (p *Processor) rejectJob(ctx context.Context, reason string) {
+	p.obs.rejected.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
 }
 
 // readPayload closes an in-progress request body when processor shutdown begins. This releases its payload slot

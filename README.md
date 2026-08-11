@@ -6,7 +6,7 @@ Zero-infrastructure, config-driven HTTP async processing for Go — built for se
 1. **Heavyweight:** provisioning SQS, Kafka, or Redis for what is often a trivial amount of async work.
 2. **Naive:** `go doWork()` inside an HTTP handler - unmanaged, unbound.
 
-**Use `qless` when:** losing an occasional job is tolerable — cache warming, notifications, analytics events, non-critical webhooks, etc.
+**Use `qless` when:** losing an occasional job is tolerable (at-most-once) - cache warming, notifications, non-critical webhooks, etc.
 
 **Do NOT use qless when:** you need durability, exactly-once processing, or audit guarantees — payments, orders, etc.
 
@@ -83,6 +83,30 @@ Applications can expose a point-in-time processor snapshot from their own health
 stats := processor.Stats()
 ```
 
-`Stats` reports queued, active, outstanding, capacity, pending-enqueue, and accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. The same values are exported from the configured OpenTelemetry meter as observable gauges under `qless.queue.*`, `qless.jobs.*`, `qless.enqueues.*`, and `qless.processor.*`.
+`Stats` reports queued, active, outstanding, capacity, pending-enqueue, worker, and accepting values. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
 
-See [`examples/main.go`](examples/main.go) for a complete program.
+## Observability
+
+qless logs through `slog` and instruments through the OpenTelemetry **API** — the API is the library's only dependency, and its instruments are no-ops until the application installs the OTel SDK. Install the SDK once in `main()` (set the global providers, or pass providers via `Config`) and every metric and span below flows to your OTLP endpoint, collector, or Prometheus scrape. See [`examples/telemetry.go`](examples/telemetry.go) for a complete OTLP setup.
+
+Counters:
+
+| Metric | Attributes | Meaning |
+| --- | --- | --- |
+| `qless.jobs.received` | | Jobs received by the HTTP handler |
+| `qless.jobs.enqueued` | | Jobs accepted into the queue |
+| `qless.jobs.rejected` | `reason`: `payload_too_large`, `body_read_error`, `not_running`, `shutdown` | Jobs turned away before enqueue (excluding backpressure) |
+| `qless.backpressure.events` | `outcome`: `rejected`, `waited`, `timeout`, `canceled`, `shutdown` | Capacity-wait outcomes |
+| `qless.jobs.executions` | `outcome`: `success`, `failure` | Execution attempts |
+| `qless.jobs.retries` | | Retries scheduled after failed attempts |
+| `qless.jobs.final_failures` | `reason`: `permanent`, `exhausted`, `abandoned`, `shutdown` | Jobs that ended without succeeding |
+
+`received = enqueued + rejected + failed backpressure outcomes`, and every accepted job ends in exactly one success (`executions{outcome="success"}`) or one `final_failures` increment.
+
+Histograms: `qless.job.duration` (per attempt), `qless.job.queue.duration` (accept → worker pickup), `qless.enqueue.wait.duration` (backpressure wait), `qless.job.payload.size`.
+
+Gauges (mirror `Stats` exactly): `qless.queue.depth`, `qless.jobs.active`, `qless.jobs.outstanding`, `qless.jobs.capacity`, `qless.enqueues.pending`, `qless.workers.configured`, `qless.processor.accepting`. Pool utilization is `jobs.active / workers.configured`; saturation is `jobs.outstanding / jobs.capacity`.
+
+Traces: the enqueue handler continues the caller's W3C trace context, and the background execution span uses the enqueue span as its remote parent — callers that propagate `traceparent` get one distributed trace across the async boundary.
+
+See [`examples/main.go`](examples/main.go) for a complete program. The example lives in its own Go module so the OTel SDK and OTLP exporters it demonstrates never enter the library's dependency graph.

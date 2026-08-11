@@ -632,8 +632,8 @@ func TestStats(t *testing.T) {
 	if initial.QueueDepth != 0 || initial.ActiveJobs != 0 || initial.OutstandingJobs != 0 {
 		t.Fatalf("initial activity = %+v, want no jobs", initial)
 	}
-	if initial.Capacity != 9 || initial.PendingEnqueues != 0 || !initial.Accepting {
-		t.Fatalf("initial stats = %+v, want capacity 9 and accepting", initial)
+	if initial.Capacity != 9 || initial.PendingEnqueues != 0 || initial.Workers != 1 || !initial.Accepting {
+		t.Fatalf("initial stats = %+v, want capacity 9, workers 1, and accepting", initial)
 	}
 
 	// First job occupies the only worker; the next three wait in the queue.

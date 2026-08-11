@@ -45,6 +45,8 @@ type Stats struct {
 	// PendingEnqueues is the number of HTTP requests currently attempting to enqueue,
 	// including requests blocked by the backpressure policy.
 	PendingEnqueues int64 `json:"pending_enqueues"`
+	// Workers is the configured worker pool size. ActiveJobs/Workers is pool utilization.
+	Workers int `json:"workers"`
 	// Accepting reports whether the processor currently accepts new jobs.
 	Accepting bool `json:"accepting"`
 }
@@ -166,6 +168,7 @@ func (p *Processor) Stats() Stats {
 		OutstandingJobs: len(p.slots),
 		Capacity:        cap(p.slots),
 		PendingEnqueues: p.pendingEnqueues.Load(),
+		Workers:         p.cfg.Workers,
 		Accepting:       accepting,
 	}
 }
@@ -314,7 +317,7 @@ func (p *Processor) execute(j *job) {
 	if j.spanContext.IsValid() {
 		ctx = trace.ContextWithRemoteSpanContext(ctx, j.spanContext)
 	}
-	ctx, span := p.obs.tracer.Start(ctx, "qless.task.execute",
+	ctx, span := p.obs.tracer.Start(ctx, "qless.job.execute",
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(
 			attribute.String("qless.job.id", j.id),
@@ -351,7 +354,6 @@ func (p *Processor) execute(j *job) {
 			return
 		}
 		if attempt == maxAttempts {
-			p.obs.exhausted.Add(ctx, 1)
 			p.finalFailure(ctx, span, j, err, "exhausted", attempt)
 			return
 		}
@@ -414,7 +416,7 @@ func (p *Processor) attempt(ctx context.Context, j *job, attempt int) (time.Dura
 	}
 	attrs := metric.WithAttributes(attribute.String("outcome", outcome))
 	p.obs.executions.Add(ctx, 1, attrs)
-	p.obs.taskDuration.Record(ctx, elapsed.Seconds(), attrs)
+	p.obs.jobDuration.Record(ctx, elapsed.Seconds(), attrs)
 
 	return elapsed, err
 }

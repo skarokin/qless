@@ -58,6 +58,7 @@ func TestStatsMetricsMatchSnapshot(t *testing.T) {
 		"qless.jobs.capacity":       int64(stats.Capacity),
 		"qless.enqueues.pending":    stats.PendingEnqueues,
 		"qless.processor.accepting": 1,
+		"qless.workers.configured":  int64(stats.Workers),
 	}
 	for name, expected := range want {
 		if actual, ok := values[name]; !ok {
