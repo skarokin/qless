@@ -37,6 +37,7 @@ type Config struct {
 	ExecutionTimeout time.Duration
 	// Backpressure controls what HTTPHandler does when the maximum number of
 	// payloads is already in use. The default is immediate rejection with HTTP 503.
+	// BlockWithTimeout may be chained with MaxWaiters and RetryAfter.
 	Backpressure BackpressurePolicy
 
 	// Logger defaults to slog.Default.
@@ -101,6 +102,12 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 		return normalizedConfig{}, fmt.Errorf("qless: ExecutionTimeout cannot be negative")
 	case cfg.Backpressure.mode == backpressureBlockWithTimeout && cfg.Backpressure.timeout <= 0:
 		return normalizedConfig{}, fmt.Errorf("qless: backpressure timeout must be positive")
+	case cfg.Backpressure.maxWaiters < 0:
+		return normalizedConfig{}, fmt.Errorf("qless: backpressure MaxWaiters cannot be negative")
+	case cfg.Backpressure.maxWaiters > 0 && cfg.Backpressure.mode != backpressureBlockWithTimeout:
+		return normalizedConfig{}, fmt.Errorf("qless: backpressure MaxWaiters is only valid with BlockWithTimeout")
+	case cfg.Backpressure.retryAfter < 0:
+		return normalizedConfig{}, fmt.Errorf("qless: backpressure RetryAfter cannot be negative")
 	case cfg.Backpressure.mode > backpressureBlockWithTimeout:
 		return normalizedConfig{}, fmt.Errorf("qless: invalid backpressure policy")
 	}

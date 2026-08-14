@@ -65,8 +65,8 @@ type Totals struct {
 	// reasons (qless.jobs.rejected).
 	Rejected int64 `json:"rejected"`
 	// Backpressure counts enqueues that failed because the processor was full:
-	// immediate rejections, wait timeouts, client cancellations, and shutdowns
-	// while waiting (the failed outcomes of qless.backpressure.events).
+	// immediate rejections, waiter overflow, wait timeouts, client cancellations,
+	// and shutdowns while waiting (the failed outcomes of qless.backpressure.events).
 	Backpressure int64 `json:"backpressure"`
 	// Succeeded counts jobs whose handler returned nil
 	// (qless.jobs.executions with outcome="success").
@@ -104,6 +104,9 @@ type Processor struct {
 
 	enqueueWG       sync.WaitGroup
 	pendingEnqueues atomic.Int64
+	// waitingEnqueues is the subset of pendingEnqueues blocked in acquireSlot
+	// waiting for a payload slot. It is the value compared to MaxWaiters.
+	waitingEnqueues atomic.Int64
 	workersWG       sync.WaitGroup
 	activeJobs      atomic.Int64
 

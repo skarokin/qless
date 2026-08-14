@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -21,7 +22,8 @@ import (
 //	400 Bad Request         body could not be read
 //	405 Method Not Allowed  non-POST request
 //	413 Content Too Large   body exceeds MaxPayloadBytes
-//	503 Service Unavailable processor full (per backpressure policy) or not running
+//	503 Service Unavailable processor full (per backpressure policy) or not running.
+//	                        Capacity 503s include Retry-After when the policy sets it.
 func (p *Processor) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -160,9 +162,22 @@ func (p *Processor) acquireSlot(ctx context.Context, w http.ResponseWriter) bool
 			"outstanding_jobs", len(p.slots),
 			"capacity", cap(p.slots),
 		)
-		http.Error(w, "qless: processor is full", http.StatusServiceUnavailable)
+		p.writeFull(w)
 		return false
 	}
+
+	if !p.beginWait() {
+		p.backpressureFailure(ctx, "overflow")
+		p.obs.logger.DebugContext(ctx, "enqueue rejected, waiter cap reached",
+			"outcome", "overflow",
+			"max_waiters", p.cfg.Backpressure.maxWaiters,
+			"outstanding_jobs", len(p.slots),
+			"capacity", cap(p.slots),
+		)
+		p.writeFull(w)
+		return false
+	}
+	defer p.waitingEnqueues.Add(-1)
 
 	start := time.Now()
 	timer := time.NewTimer(p.cfg.Backpressure.timeout)
@@ -182,7 +197,7 @@ func (p *Processor) acquireSlot(ctx context.Context, w http.ResponseWriter) bool
 			"outstanding_jobs", len(p.slots),
 			"capacity", cap(p.slots),
 		)
-		http.Error(w, "qless: processor is full", http.StatusServiceUnavailable)
+		p.writeFull(w)
 	case <-ctx.Done():
 		p.backpressureFailure(ctx, "canceled")
 		p.obs.logger.DebugContext(ctx, "enqueue canceled while waiting for capacity",
@@ -199,4 +214,32 @@ func (p *Processor) acquireSlot(ctx context.Context, w http.ResponseWriter) bool
 		http.Error(w, ErrNotRunning.Error(), http.StatusServiceUnavailable)
 	}
 	return false
+}
+
+// beginWait accounts for one blocked enqueue against MaxWaiters. A false return
+// means the cap is already full and this request must not wait.
+func (p *Processor) beginWait() bool {
+	max := int64(p.cfg.Backpressure.maxWaiters)
+	if max <= 0 {
+		p.waitingEnqueues.Add(1)
+		return true
+	}
+
+	for {
+		n := p.waitingEnqueues.Load()
+		if n >= max {
+			return false
+		}
+		if p.waitingEnqueues.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+// writeFull responds 503 for a full processor, including Retry-After when configured.
+func (p *Processor) writeFull(w http.ResponseWriter) {
+	if d := p.cfg.Backpressure.retryAfter; d > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(d)))
+	}
+	http.Error(w, "qless: processor is full", http.StatusServiceUnavailable)
 }

@@ -361,6 +361,9 @@ func TestBackpressureDropWith503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("Retry-After = %q, want empty when unset", rec.Header().Get("Retry-After"))
+	}
 }
 
 func TestBackpressureBlockWithTimeoutEventuallyAccepts(t *testing.T) {
@@ -418,6 +421,101 @@ func TestBackpressureBlockWithTimeoutExpires(t *testing.T) {
 	}
 	if totals := p.Stats().Totals; totals.Backpressure != 1 || totals.Received != 3 || totals.Enqueued != 2 {
 		t.Fatalf("totals = %+v, want backpressure 1, received 3, enqueued 2", totals)
+	}
+}
+
+func TestBackpressureMaxWaitersOverflow(t *testing.T) {
+	release := make(chan struct{})
+	p := startProcessor(t, Config{
+		Workers: 1, QueueSize: 1,
+		Backpressure: BlockWithTimeout(3 * time.Second).MaxWaiters(1).RetryAfter(2 * time.Second),
+	}, func(context.Context, []byte) error {
+		<-release
+		return nil
+	})
+
+	fillProcessor(t, p, 2)
+
+	result := make(chan int, 1)
+	go func() {
+		result <- post(p, "waiter").Code
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for p.Stats().PendingEnqueues != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if p.Stats().PendingEnqueues != 1 {
+		t.Fatal("waiter never registered as pending")
+	}
+	// acquireSlot fails the non-blocking slot send immediately, then beginWait.
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	rec := post(p, "overflow")
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("overflow status = %d, want 503", rec.Code)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("overflow waited %v, want immediate 503", elapsed)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+
+	close(release)
+	select {
+	case code := <-result:
+		if code != http.StatusAccepted {
+			t.Fatalf("waiter status = %d, want 202", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter never completed")
+	}
+
+	if totals := p.Stats().Totals; totals.Backpressure != 1 || totals.Enqueued != 3 || totals.Received != 4 {
+		t.Fatalf("totals = %+v, want received 4, enqueued 3, backpressure 1", totals)
+	}
+}
+
+func TestBackpressureRetryAfterOnDrop(t *testing.T) {
+	release := make(chan struct{})
+	p := startProcessor(t, Config{
+		Workers: 1, QueueSize: 1,
+		Backpressure: DropWith503().RetryAfter(1500 * time.Millisecond),
+	}, func(context.Context, []byte) error {
+		<-release
+		return nil
+	})
+	defer close(release)
+
+	fillProcessor(t, p, 2)
+	rec := post(p, "overflow")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	// 1500ms rounds up to 2 seconds per RFC 9110 integer delay-seconds.
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After = %q, want 2", got)
+	}
+}
+
+func TestRetryAfterSeconds(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want int
+	}{
+		{time.Nanosecond, 1},
+		{500 * time.Millisecond, 1},
+		{time.Second, 1},
+		{1500 * time.Millisecond, 2},
+		{2 * time.Second, 2},
+	}
+	for _, tc := range cases {
+		if got := retryAfterSeconds(tc.d); got != tc.want {
+			t.Errorf("retryAfterSeconds(%v) = %d, want %d", tc.d, got, tc.want)
+		}
 	}
 }
 

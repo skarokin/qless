@@ -89,7 +89,7 @@ func main() {
 		MaxPayloadBytes:  1024 * 1024,                             // max size of a job payload
 		BaseBackoff:      100 * time.Millisecond,                  // base backoff for a job that fails
 		ExecutionTimeout: 10 * time.Second,                        // cooperative timeout for each attempt
-		Backpressure:     qless.BlockWithTimeout(3 * time.Second), // also qless.DropWith503()
+		Backpressure:     qless.BlockWithTimeout(3 * time.Second).MaxWaiters(32).RetryAfter(2 * time.Second), // also qless.DropWith503()
 		Logger:           logger,
 	}, processJob)
 	if err != nil {

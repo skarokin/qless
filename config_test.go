@@ -34,6 +34,24 @@ func TestNormalizeConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigBackpressureOptions(t *testing.T) {
+	ncfg, err := normalizeConfig(Config{
+		Backpressure: BlockWithTimeout(3 * time.Second).MaxWaiters(8).RetryAfter(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("normalizeConfig: %v", err)
+	}
+	if ncfg.Backpressure.timeout != 3*time.Second {
+		t.Errorf("timeout = %v, want 3s", ncfg.Backpressure.timeout)
+	}
+	if ncfg.Backpressure.maxWaiters != 8 {
+		t.Errorf("maxWaiters = %d, want 8", ncfg.Backpressure.maxWaiters)
+	}
+	if ncfg.Backpressure.retryAfter != 2*time.Second {
+		t.Errorf("retryAfter = %v, want 2s", ncfg.Backpressure.retryAfter)
+	}
+}
+
 func TestNormalizeConfigInvalid(t *testing.T) {
 	cases := []struct {
 		name string
@@ -47,6 +65,9 @@ func TestNormalizeConfigInvalid(t *testing.T) {
 		{"negative execution timeout", Config{ExecutionTimeout: -time.Second}},
 		{"blocking backpressure without timeout", Config{Backpressure: BlockWithTimeout(0)}},
 		{"blocking backpressure negative timeout", Config{Backpressure: BlockWithTimeout(-time.Second)}},
+		{"negative max waiters", Config{Backpressure: BlockWithTimeout(time.Second).MaxWaiters(-1)}},
+		{"max waiters with drop policy", Config{Backpressure: DropWith503().MaxWaiters(1)}},
+		{"negative retry after", Config{Backpressure: DropWith503().RetryAfter(-time.Second)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

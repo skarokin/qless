@@ -28,7 +28,7 @@ processor, err := qless.New(qless.Config{
     MaxPayloadBytes:        1024 * 1024,                             // max size of a job payload
     BaseBackoff:            100 * time.Millisecond,                  // base backoff for a job that fails
     ExecutionTimeout:       10 * time.Second,                        // cooperative timeout for each attempt
-    Backpressure:           qless.BlockWithTimeout(3 * time.Second), // also qless.DropWith503()
+    Backpressure:           qless.BlockWithTimeout(3 * time.Second).MaxWaiters(32).RetryAfter(2 * time.Second), // also qless.DropWith503()
     Logger:                 logger,
 }, processJob)
 if err != nil {
@@ -104,7 +104,7 @@ Counters:
 | `qless.jobs.received` | | Jobs received by the HTTP handler |
 | `qless.jobs.enqueued` | | Jobs accepted into the queue |
 | `qless.jobs.rejected` | `reason`: `payload_too_large`, `body_read_error`, `not_running`, `shutdown` | Jobs turned away before enqueue (excluding backpressure) |
-| `qless.backpressure.events` | `outcome`: `rejected`, `waited`, `timeout`, `canceled`, `shutdown` | Capacity-wait outcomes |
+| `qless.backpressure.events` | `outcome`: `rejected`, `waited`, `timeout`, `overflow`, `canceled`, `shutdown` | Capacity-wait outcomes |
 | `qless.jobs.executions` | `outcome`: `success`, `failure` | Execution attempts |
 | `qless.jobs.retries` | | Retries scheduled after failed attempts |
 | `qless.jobs.final_failures` | `reason`: `permanent`, `exhausted`, `abandoned`, `shutdown` | Jobs that ended without succeeding |
