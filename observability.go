@@ -35,6 +35,8 @@ type observability struct {
 	outstandingJobs metric.Int64ObservableGauge
 	jobCapacity     metric.Int64ObservableGauge
 	pendingEnqueues metric.Int64ObservableGauge
+	waitingEnqueues metric.Int64ObservableGauge
+	maxWaiters      metric.Int64ObservableGauge
 	accepting       metric.Int64ObservableGauge
 	workers         metric.Int64ObservableGauge
 	registration    metric.Registration
@@ -178,6 +180,20 @@ func newObservability(cfg normalizedConfig) (*observability, error) {
 	); err != nil {
 		return nil, fmt.Errorf("qless: create pending enqueues metric: %w", err)
 	}
+	if o.waitingEnqueues, err = meter.Int64ObservableGauge(
+		"qless.enqueues.waiting",
+		metric.WithDescription("HTTP enqueue requests blocked waiting for a payload slot"),
+		metric.WithUnit("{request}"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create waiting enqueues metric: %w", err)
+	}
+	if o.maxWaiters, err = meter.Int64ObservableGauge(
+		"qless.enqueues.waiters.configured",
+		metric.WithDescription("Configured MaxWaiters cap on blocked enqueues; 0 means unbounded. Divide qless.enqueues.waiting by this for waiter utilization when positive"),
+		metric.WithUnit("{request}"),
+	); err != nil {
+		return nil, fmt.Errorf("qless: create max waiters metric: %w", err)
+	}
 	if o.accepting, err = meter.Int64ObservableGauge(
 		"qless.processor.accepting",
 		metric.WithDescription("Whether the processor is accepting jobs (1) or not (0)"),
@@ -205,6 +221,8 @@ func (o *observability) registerProcessorMetrics(p *Processor) error {
 			observer.ObserveInt64(o.outstandingJobs, int64(stats.OutstandingJobs))
 			observer.ObserveInt64(o.jobCapacity, int64(stats.Capacity))
 			observer.ObserveInt64(o.pendingEnqueues, stats.PendingEnqueues)
+			observer.ObserveInt64(o.waitingEnqueues, stats.WaitingEnqueues)
+			observer.ObserveInt64(o.maxWaiters, int64(stats.MaxWaiters))
 			observer.ObserveInt64(o.workers, int64(stats.Workers))
 			if stats.Accepting {
 				observer.ObserveInt64(o.accepting, 1)
@@ -218,6 +236,8 @@ func (o *observability) registerProcessorMetrics(p *Processor) error {
 		o.outstandingJobs,
 		o.jobCapacity,
 		o.pendingEnqueues,
+		o.waitingEnqueues,
+		o.maxWaiters,
 		o.accepting,
 		o.workers,
 	)

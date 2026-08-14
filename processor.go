@@ -43,8 +43,13 @@ type Stats struct {
 	// Capacity is the maximum number of jobs the processor can retain.
 	Capacity int `json:"capacity"`
 	// PendingEnqueues is the number of HTTP requests currently attempting to enqueue,
-	// including requests blocked by the backpressure policy.
+	// including requests blocked by the backpressure policy and those reading a body.
 	PendingEnqueues int64 `json:"pending_enqueues"`
+	// WaitingEnqueues is the subset of PendingEnqueues blocked waiting for a payload slot.
+	// WaitingEnqueues/MaxWaiters is waiter utilization when MaxWaiters is positive.
+	WaitingEnqueues int64 `json:"waiting_enqueues"`
+	// MaxWaiters is the configured cap on blocked enqueue waiters. 0 means unbounded.
+	MaxWaiters int `json:"max_waiters"`
 	// Workers is the configured worker pool size. ActiveJobs/Workers is pool utilization.
 	Workers int `json:"workers"`
 	// Accepting reports whether the processor currently accepts new jobs.
@@ -209,6 +214,8 @@ func (p *Processor) Stats() Stats {
 		OutstandingJobs: len(p.slots),
 		Capacity:        cap(p.slots),
 		PendingEnqueues: p.pendingEnqueues.Load(),
+		WaitingEnqueues: p.waitingEnqueues.Load(),
+		MaxWaiters:      p.cfg.Backpressure.maxWaiters,
 		Workers:         p.cfg.Workers,
 		Accepting:       accepting,
 		Totals: Totals{

@@ -269,8 +269,8 @@ func TestPayloadBodiesAreBoundedByCapacity(t *testing.T) {
 	}
 
 	stats := p.Stats()
-	if stats.OutstandingJobs != stats.Capacity || stats.PendingEnqueues != 2 {
-		t.Fatalf("stats with bodies being read = %+v, want full capacity and two pending", stats)
+	if stats.OutstandingJobs != stats.Capacity || stats.PendingEnqueues != 2 || stats.WaitingEnqueues != 0 {
+		t.Fatalf("stats with bodies being read = %+v, want full capacity, two pending, zero waiting", stats)
 	}
 
 	overflow := newBlockingBody()
@@ -442,14 +442,12 @@ func TestBackpressureMaxWaitersOverflow(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for p.Stats().PendingEnqueues != 1 && time.Now().Before(deadline) {
+	for p.Stats().WaitingEnqueues != 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if p.Stats().PendingEnqueues != 1 {
-		t.Fatal("waiter never registered as pending")
+	if stats := p.Stats(); stats.WaitingEnqueues != 1 || stats.MaxWaiters != 1 {
+		t.Fatalf("waiter stats = %+v, want waiting 1, max waiters 1", stats)
 	}
-	// acquireSlot fails the non-blocking slot send immediately, then beginWait.
-	time.Sleep(20 * time.Millisecond)
 
 	start := time.Now()
 	rec := post(p, "overflow")
@@ -535,12 +533,12 @@ func TestStatsIncludesPendingEnqueue(t *testing.T) {
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for p.Stats().PendingEnqueues != 1 && time.Now().Before(deadline) {
+	for p.Stats().WaitingEnqueues != 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	stats := p.Stats()
-	if stats.PendingEnqueues != 1 || stats.OutstandingJobs != stats.Capacity {
-		t.Fatalf("stats while enqueue waits = %+v, want one pending and full capacity", stats)
+	if stats.WaitingEnqueues != 1 || stats.PendingEnqueues != 1 || stats.OutstandingJobs != stats.Capacity {
+		t.Fatalf("stats while enqueue waits = %+v, want one waiting/pending and full capacity", stats)
 	}
 
 	close(release)
@@ -733,7 +731,7 @@ func TestStats(t *testing.T) {
 	if initial.QueueDepth != 0 || initial.ActiveJobs != 0 || initial.OutstandingJobs != 0 {
 		t.Fatalf("initial activity = %+v, want no jobs", initial)
 	}
-	if initial.Capacity != 9 || initial.PendingEnqueues != 0 || initial.Workers != 1 || !initial.Accepting {
+	if initial.Capacity != 9 || initial.PendingEnqueues != 0 || initial.WaitingEnqueues != 0 || initial.MaxWaiters != 0 || initial.Workers != 1 || !initial.Accepting {
 		t.Fatalf("initial stats = %+v, want capacity 9, workers 1, and accepting", initial)
 	}
 

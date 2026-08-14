@@ -83,7 +83,7 @@ Applications can expose a point-in-time processor snapshot from their own health
 stats := processor.Stats()
 ```
 
-`Stats` reports queued, active, outstanding, capacity, pending-enqueue, worker, and accepting values, plus cumulative `Totals` (received, enqueued, rejected, backpressure, succeeded, retries, final failures) that mirror the OpenTelemetry counters. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every point-in-time `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
+`Stats` reports queued, active, outstanding, capacity, pending-enqueue, waiting-enqueue, max-waiters, worker, and accepting values, plus cumulative `Totals` (received, enqueued, rejected, backpressure, succeeded, retries, final failures) that mirror the OpenTelemetry counters. Use `OutstandingJobs > 0` rather than `QueueDepth > 0` for keep-alive decisions because the final job leaves the queue while it is still executing. Every point-in-time `Stats` field is also exported as an OpenTelemetry observable gauge (see below).
 
 A zero-dependency HTML page that polls the same `Stats` snapshot once per second and charts the last five minutes ships with the library:
 
@@ -113,7 +113,7 @@ Counters:
 
 Histograms: `qless.job.duration` (per attempt), `qless.job.queue.duration` (accept → worker pickup), `qless.enqueue.wait.duration` (backpressure wait), `qless.job.payload.size`.
 
-Gauges (mirror `Stats` exactly): `qless.queue.depth`, `qless.jobs.active`, `qless.jobs.outstanding`, `qless.jobs.capacity`, `qless.enqueues.pending`, `qless.workers.configured`, `qless.processor.accepting`. Pool utilization is `jobs.active / workers.configured`; saturation is `jobs.outstanding / jobs.capacity`.
+Gauges (mirror `Stats` exactly): `qless.queue.depth`, `qless.jobs.active`, `qless.jobs.outstanding`, `qless.jobs.capacity`, `qless.enqueues.pending`, `qless.enqueues.waiting`, `qless.enqueues.waiters.configured`, `qless.workers.configured`, `qless.processor.accepting`. Pool utilization is `jobs.active / workers.configured`; saturation is `jobs.outstanding / jobs.capacity`; waiter utilization is `enqueues.waiting / enqueues.waiters.configured` when the waiter cap is positive.
 
 Traces: the enqueue handler continues the caller's W3C trace context, and the background execution span uses the enqueue span as its remote parent — callers that propagate `traceparent` get one distributed trace across the async boundary.
 

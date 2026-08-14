@@ -24,8 +24,8 @@ func TestDashboardHandler(t *testing.T) {
 		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 			t.Fatalf("content type = %q, want text/html", ct)
 		}
-		if !strings.Contains(rec.Body.String(), "qless") {
-			t.Fatal("page body does not mention qless")
+		if !strings.Contains(rec.Body.String(), "waiting_enqueues") {
+			t.Fatal("page body missing waiting_enqueues")
 		}
 	})
 
@@ -39,8 +39,8 @@ func TestDashboardHandler(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
 			t.Fatalf("unmarshal stats: %v", err)
 		}
-		if stats.Workers != 2 || stats.Capacity != 6 || !stats.Accepting {
-			t.Fatalf("stats = %+v, want workers 2, capacity 6, accepting", stats)
+		if stats.Workers != 2 || stats.Capacity != 6 || stats.MaxWaiters != 0 || !stats.Accepting {
+			t.Fatalf("stats = %+v, want workers 2, capacity 6, unbounded waiters, accepting", stats)
 		}
 	})
 

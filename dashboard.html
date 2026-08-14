@@ -45,7 +45,7 @@
 
   .panel { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
 
-  .stats { display: grid; grid-template-columns: repeat(6, 1fr); }
+  .stats { display: grid; grid-template-columns: repeat(7, 1fr); }
   .stat { padding: 16px 20px; border-left: 1px solid var(--border); }
   .stat:first-child { border-left: none; }
   .stat .label { color: var(--muted); font-size: 12px; }
@@ -59,7 +59,7 @@
   .stats.totals .stat { padding: 12px 16px; }
   .stats.totals .value { font-size: 16px; letter-spacing: -.2px; }
 
-  .meters { display: grid; grid-template-columns: 1fr 1fr; }
+  .meters { display: grid; grid-template-columns: 1fr 1fr 1fr; }
   .meter { padding: 16px 20px; }
   .meter + .meter { border-left: 1px solid var(--border); }
   .meter .row { display: flex; justify-content: space-between; margin-bottom: 10px; }
@@ -78,14 +78,16 @@
   footer { color: var(--faint); font-size: 12px; }
 
   @media (max-width: 720px) {
-    .stats { grid-template-columns: repeat(3, 1fr); }
-    .stat:nth-child(4) { border-left: none; }
-    .stat:nth-child(n+4) { border-top: 1px solid var(--border); }
+    .stats:not(.totals) { grid-template-columns: repeat(4, 1fr); }
+    .stats:not(.totals) .stat:nth-child(5) { border-left: none; }
+    .stats:not(.totals) .stat:nth-child(n+5) { border-top: 1px solid var(--border); }
     .stats.totals { grid-template-columns: repeat(4, 1fr); }
     .stats.totals .stat:nth-child(4) { border-left: 1px solid var(--border); }
     .stats.totals .stat:nth-child(5) { border-left: none; }
     .stats.totals .stat:nth-child(n+5) { border-top: 1px solid var(--border); }
     .stats.totals .stat:nth-child(4) { border-top: none; }
+    .meters { grid-template-columns: 1fr; }
+    .meter + .meter { border-left: none; border-top: 1px solid var(--border); }
   }
 </style>
 </head>
@@ -104,6 +106,7 @@
   <div class="stat"><div class="label">Queued</div><div class="value" id="queue_depth">–</div></div>
   <div class="stat"><div class="label">Active</div><div class="value" id="active_jobs">–</div></div>
   <div class="stat"><div class="label">Pending</div><div class="value" id="pending_enqueues">–</div></div>
+  <div class="stat"><div class="label">Waiting</div><div class="value" id="waiting_enqueues">–</div></div>
   <div class="stat"><div class="label">Workers</div><div class="value" id="workers">–</div></div>
   <div class="stat"><div class="label">Capacity</div><div class="value" id="capacity">–</div></div>
 </div>
@@ -126,6 +129,10 @@
   <div class="meter">
     <div class="row"><span class="name">Saturation</span><span class="frac" id="sat-frac">–</span></div>
     <div class="track"><div class="fill" id="sat-fill"></div></div>
+  </div>
+  <div class="meter">
+    <div class="row"><span class="name">Waiters</span><span class="frac" id="wait-frac">–</span></div>
+    <div class="track"><div class="fill" id="wait-fill"></div></div>
   </div>
 </div>
 
@@ -150,8 +157,14 @@
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   function setMeter(prefix, num, den) {
-    const pct = den > 0 ? Math.min(1, num / den) : 0;
     const fill = el(prefix + "-fill");
+    if (den <= 0) {
+      fill.style.width = "0%";
+      fill.style.backgroundColor = css("--text");
+      el(prefix + "-frac").textContent = num + " / ∞";
+      return;
+    }
+    const pct = Math.min(1, num / den);
     fill.style.width = (pct * 100) + "%";
     fill.style.backgroundColor = pct >= .9 ? css("--red") : pct >= .7 ? css("--amber") : css("--text");
     el(prefix + "-frac").textContent = num + " / " + den;
@@ -206,7 +219,7 @@
   }
 
   function render(s) {
-    for (const key of ["outstanding_jobs", "queue_depth", "active_jobs", "pending_enqueues", "workers", "capacity"]) {
+    for (const key of ["outstanding_jobs", "queue_depth", "active_jobs", "pending_enqueues", "waiting_enqueues", "workers", "capacity"]) {
       el(key).textContent = s[key];
     }
     for (const key of ["received", "enqueued", "succeeded", "retries", "final_failures", "rejected", "backpressure"]) {
@@ -221,6 +234,7 @@
     el("accepting-text").textContent = s.accepting ? "Accepting" : "Not accepting";
     setMeter("util", s.active_jobs, s.workers);
     setMeter("sat", s.outstanding_jobs, s.capacity);
+    setMeter("wait", s.waiting_enqueues, s.max_waiters);
 
     push(history.outstanding, s.outstanding_jobs);
     push(history.queued, s.queue_depth);
